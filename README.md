@@ -18,6 +18,8 @@ A-shares / HK / US stocks · Commodities · US Treasury yields · Sector heat ·
 [![GitHub Stars](https://img.shields.io/github/stars/theBigGavin/marketingdashboard?style=social&label=Stars)](https://github.com/theBigGavin/marketingdashboard)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
+🚀 **Live demo**: https://mrd.hermes.cc.cd — *no API keys, no login, works instantly*
+
 </div>
 
 ![Market Research Cockpit screenshot](docs/screenshot.png)
