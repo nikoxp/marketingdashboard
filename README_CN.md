@@ -22,6 +22,8 @@
 
 ![市场研究驾驶舱截图](docs/screenshot.png)
 
+🏠 **来自 Gavin's Lab** — 一家由 7 个 AI agent 通过 kanban board 协作运转的一人公司：[公司官网](https://www.hermes.cc.cd) · [透明办公室（LIVE）](https://www.hermes.cc.cd/opc/)
+
 ## ✨ 功能亮点
 
 - **🌍 全球市场一屏掌握** — 沪深 / 恒生 / 道琼斯 / 纳斯达克 / 标普 / VIX / 美元人民币汇率，指数分钟级走势同屏联动

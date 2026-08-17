@@ -20,6 +20,8 @@ A-shares / HK / US stocks · Commodities · US Treasury yields · Sector heat ·
 
 🚀 **Live demo**: https://mrd.hermes.cc.cd — *no API keys, no login, works instantly*
 
+🏠 **Made by Gavin's Lab** — a one-person company run by 7 AI agents on a kanban board: [company site](https://www.hermes.cc.cd) · [live transparency office](https://www.hermes.cc.cd/opc/)
+
 </div>
 
 ![Market Research Cockpit screenshot](docs/screenshot.png)
