@@ -24,6 +24,8 @@
 
 🏠 **来自 Gavin's Lab** — 一家由 7 个 AI agent 通过 kanban board 协作运转的一人公司：[公司官网](https://www.hermes.cc.cd) · [透明办公室（LIVE）](https://www.hermes.cc.cd/opc/)
 
+🛎️ **托管版筹备中** — 暂无定价、暂无上线日期。不想自己维护服务器？欢迎在 [GitHub Issues](https://github.com/theBigGavin/marketingdashboard/issues) 告诉我们你最看重什么。开源自托管版永久免费（MIT），不会变。
+
 ## ✨ 功能亮点
 
 - **🌍 全球市场一屏掌握** — 沪深 / 恒生 / 道琼斯 / 纳斯达克 / 标普 / VIX / 美元人民币汇率，指数分钟级走势同屏联动

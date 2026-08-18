@@ -69,6 +69,7 @@ check treasury-history /api/treasury-history
 check moneyflow /api/moneyflow
 check board-flow /api/board-flow
 check aa-models /api/aa-models
+check token-stats /api/token-stats
 
 # 带参端点
 check quotes "/api/quotes?codes=sh000001,sz399001,hf_GC"

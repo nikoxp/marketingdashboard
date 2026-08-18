@@ -83,6 +83,11 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+/* 亮色模式(body 背景跟随 .dark 切换; 其他页面根 div 写死深色铺满, 不受影响) */
+html:not(.dark) body {
+  background: hsl(0 0% 100%);
+}
+
 /* 跑马灯 */
 .ticker-wrap .ticker-track {
   animation: ticker-scroll 60s linear infinite;

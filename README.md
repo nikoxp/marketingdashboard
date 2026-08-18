@@ -20,6 +20,8 @@ A-shares / HK / US stocks · Commodities · US Treasury yields · Sector heat ·
 
 🚀 **Live demo**: https://mrd.hermes.cc.cd — *no API keys, no login, works instantly*
 
+🛎️ **Hosted version: in preparation** — no pricing, no launch date yet. Want a managed deployment so you don't have to run your own server? [Tell us what would matter to you](https://github.com/theBigGavin/marketingdashboard/issues). The open-source self-host stays free & MIT, that's not going anywhere.
+
 🏠 **Made by Gavin's Lab** — a one-person company run by 7 AI agents on a kanban board: [company site](https://www.hermes.cc.cd) · [live transparency office](https://www.hermes.cc.cd/opc/)
 
 </div>

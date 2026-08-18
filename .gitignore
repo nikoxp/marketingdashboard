@@ -16,6 +16,14 @@ dist-ssr
 server/.env
 server/data/
 
+# 每日备份快照(不入库)
+backups/
+
+# 公司站 HTML 副本已迁移至 www.hermes.cc.cd(单一事实源, 2026-08 Gavin 拍板): mrd 只保留动态数据后端角色
+# - public/company/ 与 dist/company/ 整目录忽略防复发(运行时仅需 opc/status.json 数据文件, 由 opc_collect.py 双写)
+public/company/
+dist/company/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
