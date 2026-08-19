@@ -94,7 +94,7 @@ export default function FinDashboard() {
         onToggleFullscreen={toggle}
       />
       <FinProvider>
-        <DashboardLayout rows={PANEL_ROWS} />
+        <DashboardLayout rows={PANEL_ROWS} pageKey="fin" />
       </FinProvider>
     </div>
   );

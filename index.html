@@ -14,9 +14,24 @@
     <meta name="apple-mobile-web-app-title" content="驾驶舱" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>市场研究驾驶舱</title>
+    <style>
+      /* 0818-aa: mrd demo 站 footer 导流回官网漏斗 — 静态一行, 低调不喧宾夺主, 不弹窗不悬浮 */
+      .mrd-foot {
+        padding: 8px 16px; text-align: center; font-size: 11.5px; line-height: 1.6;
+        color: #64748b; background: #070b12; border-top: 1px solid rgba(148, 163, 184, 0.12);
+      }
+      .mrd-foot a { color: #94a3b8; text-decoration: none; }
+      .mrd-foot a:hover { color: #e2e8f0; text-decoration: underline; }
+      html:not(.dark) .mrd-foot { background: #ffffff; border-top-color: rgba(100, 116, 139, 0.18); color: #64748b; }
+      html:not(.dark) .mrd-foot a { color: #475569; }
+      html:not(.dark) .mrd-foot a:hover { color: #0f172a; }
+    </style>
   </head>
   <body style="background:#070b12">
     <div id="root"></div>
+    <footer class="mrd-foot" id="mrd-foot">
+      by Gavin's OPC —— <a href="https://www.hermes.cc.cd" target="_blank" rel="noreferrer">官网 www.hermes.cc.cd</a> / <a href="https://www.hermes.cc.cd/#assistant" target="_blank" rel="noreferrer">AI 助理</a>
+    </footer>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

@@ -119,7 +119,7 @@ export default function GoodsDashboard() {
         isFullscreen={isFullscreen}
         onToggleFullscreen={toggle}
       />
-      <DashboardLayout rows={PANEL_ROWS} />
+      <DashboardLayout rows={PANEL_ROWS} pageKey="goods" />
     </div>
   );
 }

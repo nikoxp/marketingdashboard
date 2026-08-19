@@ -89,6 +89,22 @@ const { handleAaModels, handleSpendIndex } = srcAiModels;
 // 官网合作咨询（改版5）: 校验 + 落盘 contact.jsonl（不写 state.json）
 const { validateContact, appendContact } = require("./lib/contact.cjs");
 
+// 官网 AI 助理（0818-a P0）: 校验 + 意向判定 + LLM 回复 + 落盘 assistant-leads.jsonl
+const {
+  validateAssistant, detectIntent, summarizeNeed, callAssistantLLM, fallbackReply,
+  appendAssistantLead, QUESTION_MAX,
+} = require("./lib/assistant.cjs");
+
+// 博客评论 + 阅读量（0818: Gavin 指令 blog 支持回复评论 + 统计阅读量, 方案: mrd 后端代理）
+const {
+  loadComments, saveComments, validateComment, isAdmin, addComment,
+  makeCommentRateLimiter, loadViews, saveViews, recordView, viewsFor, vidKey,
+} = require("./lib/blog.cjs");
+const BLOG_COMMENTS_FILE = path.join(__dirname, "data", "blog-comments.json");
+const BLOG_VIEWS_FILE = path.join(__dirname, "data", "blog-views.json");
+// 评论频控: 同 vid(无 vid 则按 IP) 60 秒内限 1 条, 超限 429
+const blogCommentLimiter = makeCommentRateLimiter(60 * 1000);
+
 // 个股资金流上游 inflight 去重表(handleStockFlows 使用)
 const flowInflight = new Map();
 
@@ -211,6 +227,48 @@ const routes = {
   },
   // ---- 官网访问统计（改版4）: 只计数不采集, 每次 GET 即记一次访问(PV+1), UV 按匿名 vid/IP 哈希去重 ----
   "/api/visits": async (q, _body, req) => handleVisits(req, q.get("vid") || ""),
+  // ---- 博客评论（0818）: GET 拉取(post_id 过滤, 时间升序) / POST 发表(校验 + admin 判定 + 频控 + 原子落盘) ----
+  "/api/blog/comments": async (q, body, req) => {
+    if (req.method === "GET") {
+      const post_id = String(q.get("post_id") || "").trim();
+      if (!post_id || post_id.length > 64) {
+        const e = new Error("invalid post_id"); e.status = 400; throw e;
+      }
+      const list = loadComments(BLOG_COMMENTS_FILE)
+        .filter((c) => c.post_id === post_id)
+        .sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
+      return { comments: list };
+    }
+    const comments = loadComments(BLOG_COMMENTS_FILE);
+    const v = validateComment(body, comments);
+    if (!v.ok) { const e = new Error(v.error); e.status = 400; throw e; }
+    const vid = vidKey(body && body.vid);
+    const rateKey = vid || clientIp(req);
+    if (!blogCommentLimiter(rateKey)) {
+      const e = new Error("too many requests"); e.status = 429; throw e;
+    }
+    const rec = addComment(comments, v.value, isAdmin(body));
+    try { saveComments(BLOG_COMMENTS_FILE, comments); }
+    catch (e) { console.error("[blog-comments] save error:", e.message); }
+    return { comment: rec };
+  },
+  // ---- 博客阅读量（0818）: POST 幂等计数(同 vid 每篇 365 天内 1 次) / GET 批量查询(列表页一次拉全) ----
+  "/api/blog/views": async (q, body, req) => {
+    if (req.method === "POST") {
+      const post_id = String((body && body.post_id) || "").trim();
+      if (!post_id || post_id.length > 64) {
+        const e = new Error("invalid post_id"); e.status = 400; throw e;
+      }
+      const views = loadViews(BLOG_VIEWS_FILE);
+      const vid = vidKey(body && body.vid);
+      const key = vid || "ip:" + crypto.createHash("sha256").update("ip:" + clientIp(req)).digest("hex").slice(0, 32);
+      const { count, added } = recordView(views, post_id, key);
+      if (added) { try { saveViews(BLOG_VIEWS_FILE, views); } catch (e) { console.error("[blog-views] save error:", e.message); } }
+      return { count };
+    }
+    const ids = String(q.get("post_ids") || "").split(",").map((s) => s.trim()).filter(Boolean).slice(0, 100);
+    return { views: viewsFor(loadViews(BLOG_VIEWS_FILE), ids) };
+  },
   "/api/minute": async (q) =>
     cached(`minute:${q.get("code")}`, 5000, () => handleMinute(q.get("code") || "sh000001")),
   // 批量分钟线: 将 N 次单独请求合并为 1 次, 大幅降低冷启动爆发请求数
@@ -362,6 +420,53 @@ const routes = {
     appendContact(CONTACT_DATA_DIR, rec);
     return { received: true, ts: rec.ts };
   },
+  // ---- 官网 AI 助理（0818-a P0）: 校验 + 同 IP 限频 + LLM 回复 + 意向命中落盘 ----
+  // 访客提交问题/意向 → AI 基于公司知识库回复（话术红线: 托管版只讲「筹备中」不报价不承诺）
+  // → INTENT_KEYWORDS 命中 → 落盘 assistant-leads.jsonl → cron 登记 state.json leads[] → 转温雯。
+  // 红线: 邮箱以外的个人信息不落盘（只存 email，不存姓名/电话）。
+  "/api/assistant": async (_q, body, req) => {
+    const v = validateAssistant(body);
+    if (!v.ok) { const e = new Error(v.error); e.status = 400; throw e; }
+    const ip = clientIp(req);
+    // 0819-c P1-1 托管模式分支: 请求带有效 Bearer token → 解析 tenant → 按租户独立额度扣减
+    // (consume 在 LLM 调用前扣, 防烧钱; LLM 失败不退还, 从简)。额度耗尽 → 429 中性文案。
+    // 无 token 或非托管模式 → 现有 IP 限流照旧(开源行为零回归)。
+    let tenantId = null;
+    if (hostingQuotaApi) {
+      const token = hostingQuotaApi.bearerToken(req);
+      if (token) {
+        tenantId = hostingQuotaApi.resolveToken(hostingDb, token);
+        // 托管模式带 token 但无效/过期 → 401(不回落 IP 限流, 防伪造 token 刷额度)
+        if (!tenantId) { const e = new Error("请先登录"); e.status = 401; throw e; }
+        const quota = hostingQuotaApi.consumeAiQuota(hostingDb, tenantId);
+        if (quota.remaining <= 0) { const e = new Error("今日 AI 额度已用完，明天再来"); e.status = 429; throw e; }
+      }
+    }
+    // 防烧 token/防刷: 同 IP 3 条/5 分钟(先于 LLM 调用, 超限直接 429); 托管扣减分支跳过(租户额度即限流)
+    if (!tenantId && !assistantLimiter(ip)) { const e = new Error("assistant rate limited"); e.status = 429; throw e; }
+    const { question, contact, source } = v.value;
+    const reply = (await callAssistantLLM(question)) || fallbackReply();
+    const hits = detectIntent(question);
+    let lead_id = null;
+    if (hits.length > 0) {
+      // 意向命中 → 落盘（供 cron 登记 leads[] + 转温雯; 不写 state.json, 与 contact 同策略）
+      // 0819-z 决议第 7 项: 结构化字段随线索落盘 —— intent_hits(意向关键词数组) + need_detail(需求详情摘要)
+      const rec = {
+        ts: new Date().toISOString(),
+        ip,
+        question,
+        contact, // 仅邮箱（红线: 邮箱以外不落盘）
+        intent_hits: hits,
+        need_detail: summarizeNeed(question),
+        reply,
+        registered: false,
+      };
+      if (source) rec.source = source; // 0818-aa: demo 报告页 CTA 来源（如 demo_report），官网提交不带 source 行为不变
+      const saved = appendAssistantLead(ASSISTANT_DATA_DIR, rec);
+      lead_id = `${saved.ts}_${String(ip).replace(/[^0-9a-f.]/gi, "_").slice(0, 40)}`;
+    }
+    return { reply, intent_hit: hits.length > 0, intent_keywords: hits, lead_id };
+  },
   // ---- OPC 透明办公室 demo 体验（12a）----
   "/api/opc/demo": async (_q, body, req) => {
     // a) 白名单校验: 只认 4 个预设 id, 其他字段一律忽略（防 prompt 注入/防外人驱动 agent）
@@ -412,9 +517,11 @@ const routes = {
         .filter(([, t]) => ["completed", "failed"].includes(t.status))
         .map(([id, t]) => ({
           demo_id: id, task_id: t.task_id, status: t.status,
-          created_at: t.created_at, finished_at: t.finished_at || null,
+          // created_at 兜底（缺省回退 started_at/finished_at），保证每条可排序
+          created_at: demoTaskCreatedAt(t), finished_at: t.finished_at || null,
         }))
-        .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
+        // 排序健壮性: 先归一化再比较, 杜绝 undefined 参与 localeCompare 异常(曾致无时间记录恒置顶)
+        .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")))
         .slice(0, DEMO_HISTORY_MAX);
     }
     return { items, count: items.length };
@@ -423,6 +530,38 @@ const routes = {
   "/api/opc/demo/weather/gz": async () =>
     cached("gz-weather", GZ_WEATHER_TTL_MS, () => handleGzWeather()),
 };
+
+// ---- 托管版托管层（HOSTING=1 启用）: 单实例多租户账号系统, 只增不改核心路由 ----
+// 复用本文件数据管道/共享缓存(公开行情只读共享); 新增 /api/hosting/* 账号路由
+// (SQLite users 表, 邮箱+密码, Bearer token; watchlist 等个性化数据按租户隔离)。
+// 开源版(HOSTING 未设置)完全不加载, 行为与以往逐字节一致。
+// 0819-c P1-1: hostingDb/hostingQuotaApi 供 /api/assistant 托管化扣减复用同一连接(见下方路由)。
+let hostingDb = null;      // HOSTING=1 时的托管 SQLite 连接(assistant 配额扣减用)
+let hostingQuotaApi = null; // { bearerToken, resolveToken, consumeAiQuota } — 开源模式保持 null
+if (process.env.HOSTING === "1") {
+  try {
+    const { initHosting } = require("./hosting/index.cjs");
+    const hosting = initHosting();
+    Object.assign(routes, hosting.routes);
+    hostingDb = hosting.db;
+    // 配额扣减只依赖托管层导出的纯函数(与路由表解耦); 拆库后文件由 start_hosting.sh 注入
+    hostingQuotaApi = {
+      bearerToken: require("./hosting/routes.cjs").bearerToken,
+      resolveToken: require("./hosting/db.cjs").resolveToken,
+      consumeAiQuota: require("./hosting/db.cjs").consumeAiQuota,
+    };
+  } catch (e) {
+    // 拆库后(2026-08-18): 托管层由私有仓库 mrd-pro 经 start_hosting.sh 注入部署。
+    // 托管模式(HOSTING=1)下加载失败 = 账号墙缺失 → 裸开源实例暴露在托管域名(host.hermes.cc.cd)
+    // 是安全隐患(任何访客绕过登录墙直达看板) → 拒绝启动。
+    console.error("[hosting] 托管层加载失败(HOSTING=1, 拒绝启动防裸奔):", e?.stack || e?.message || e);
+    process.exit(1);
+  }
+}
+
+// ---- 手速排行榜迁移(0819-i): 已迁独立进程 server/knock-standalone.cjs(:3032, 公网入口
+// https://hermes.cc.cd/api/v1/knock, cloudflared ingress)。此处不再挂载 initKnock,
+// 避免双进程写同一 SQLite(server/data/knock.db); 旧路径改由下方请求处理器 302 重定向到新域。
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -685,7 +824,7 @@ const DEMO_STATUS_FILE = path.join(DEMO_DIR, "status.json");
 const DEMO_RATE_WINDOW_MS = 60 * 1000;   // 同 IP 频控窗口: 1 次/60s（防烧钱/防刷，可调）
 const DEMO_RATE_MAX = 1;                 // 同 IP 频控上限
 const DEMO_MAX_INFLIGHT = 2;             // 全局并发上限: 在飞(queued/dispatched/running) ≤2
-const DEMO_HISTORY_MAX = 20;             // 回看入口最多 20 条
+const DEMO_HISTORY_MAX = 30;             // 回看入口最多 30 条（23 修复: 20→30, 让时间正确的历史遗留条目如 dflocktest 不被截断在列表外）
 const DEMO_SSE_POLL_MS = 2000;           // SSE 内部状态轮询间隔（状态分钟级变化，2s 追平足够）
 const DEMO_SSE_MAX_MS = 15 * 60 * 1000;  // SSE 连接硬上限 15 分钟，防资源泄漏
 const demoLimiter = makeLimiter(DEMO_RATE_WINDOW_MS, DEMO_RATE_MAX);
@@ -695,6 +834,12 @@ const CONTACT_DATA_DIR = path.join(__dirname, "data");
 const CONTACT_RATE_WINDOW_MS = 60 * 60 * 1000; // 1 小时窗口
 const CONTACT_RATE_MAX = 3;                    // 同 IP 最多 3 条/小时
 const contactLimiter = makeLimiter(CONTACT_RATE_WINDOW_MS, CONTACT_RATE_MAX);
+
+// 官网 AI 助理（0818-a P0）: 落盘目录 + 同 IP 3 条/5 分钟限频（防烧 token/防刷）
+const ASSISTANT_DATA_DIR = path.join(__dirname, "data");
+const ASSISTANT_RATE_WINDOW_MS = 5 * 60 * 1000; // 5 分钟窗口
+const ASSISTANT_RATE_MAX = 3;                   // 同 IP 最多 3 条/5 分钟
+const assistantLimiter = makeLimiter(ASSISTANT_RATE_WINDOW_MS, ASSISTANT_RATE_MAX);
 
 // 启动时把预设表同步成 presets.json（供 opc_demo_dispatch.py 读取，单一事实源；服务端仍是硬编码白名单）
 try {
@@ -835,6 +980,11 @@ function demoReadStatus() {
 function demoWriteStatus(s) {
   fs.mkdirSync(DEMO_DIR, { recursive: true });
   fs.writeFileSync(DEMO_STATUS_FILE, JSON.stringify(s, null, 2));
+}
+// 统一创建时间兜底: 历史遗留写入可能缺 created_at（如 8/17 flock 并发测试直写 status.json 的条目），
+// 依次回退 started_at → finished_at, 保证派生 history 每条都有可排序时间
+function demoTaskCreatedAt(t) {
+  return t.created_at || t.started_at || t.finished_at || null;
 }
 // 对外视图: 不含 ip（隐私），completed 时附带报告 markdown（读结果文件）
 function demoTaskView(s, id) {
@@ -1011,6 +1161,20 @@ function readBodyWithLimit(req, limit) {
 const server = http.createServer(async (req, res) => {
   try {
     const u = new URL(req.url, "http://localhost");
+    // ---- 手速排行榜旧路径重定向(0819-i): knock 已迁独立进程(hermes.cc.cd/api/v1/knock, :3032)。
+    // mrd 旧路径 /api/v1/knock/* 一律 302 到新域, 保留剩余路径与 query 参数; 旧版 mylauncher
+    // 升级前排行榜不中断(客户端默认跟随重定向)。GET/HEAD 用 302; POST 用 307(保留方法与 body,
+    // 旧版 submit 不被 302 转 GET 丢体)。放在请求处理最前, 先于一切路由/预检分支。
+    if (u.pathname.startsWith("/api/v1/knock/")) {
+      const rest = u.pathname.slice("/api/v1/knock".length) || "/";
+      const loc = "https://hermes.cc.cd/api/v1/knock" + rest + (u.search || "");
+      res.writeHead(req.method === "POST" ? 307 : 302, {
+        Location: loc,
+        "Cache-Control": "no-store",
+        ...STATIC_HEADERS,
+      });
+      return res.end();
+    }
     // ---- OPC 全局状态流 SSE: GET /api/opc/stream（15a, 持续推送不关闭）----
     if (u.pathname === "/api/opc/stream" && req.method === "GET") {
       stats.reqs++;
@@ -1083,7 +1247,9 @@ const server = http.createServer(async (req, res) => {
     // 触发 preflight, 现返回 400 导致浏览器拦截; 这里放行白名单来源并返回完整 CORS 头。
     // status/history/SSE 流为简单 GET(无自定义头)不触发 preflight, 由响应 ACAO 放行。
     // 官网合作咨询(改版5): /api/contact 同走 www.hermes.cc.cd 白名单(落地页表单跨源提交)。
-    if (req.method === "OPTIONS" && (u.pathname.startsWith("/api/opc/") || u.pathname === "/api/contact" || u.pathname === "/api/visits" || u.pathname === "/api/token-stats")) {
+    // 官网 AI 助理(0818-a P0): /api/assistant 同走白名单(落地页 AI 问答表单跨源提交)。
+    // 博客评论+阅读量(0818): /api/blog/ 同走白名单(www Pages 站 blog 评论区跨源读写)。
+    if (req.method === "OPTIONS" && (u.pathname.startsWith("/api/opc/") || u.pathname.startsWith("/api/blog/") || u.pathname === "/api/contact" || u.pathname === "/api/visits" || u.pathname === "/api/token-stats" || u.pathname === "/api/assistant")) {
       const cors = opcCorsHeaders(req);
       if (cors["Access-Control-Allow-Origin"] == null) {
         send(res, 403, { ok: false, error: "forbidden" }, cors);
@@ -1101,7 +1267,7 @@ const server = http.createServer(async (req, res) => {
       stats.reqs++;
       const ip = clientIp(req);
       trackActiveIp(ip);
-      const cors = u.pathname.startsWith("/api/opc/") || u.pathname === "/api/contact" || u.pathname === "/api/visits" || u.pathname === "/api/token-stats"
+      const cors = u.pathname.startsWith("/api/opc/") || u.pathname.startsWith("/api/blog/") || u.pathname === "/api/contact" || u.pathname === "/api/visits" || u.pathname === "/api/token-stats" || u.pathname === "/api/assistant"
         ? opcCorsHeaders(req)
         : corsHeadersFor(req);
       // 按 IP 限流(先于缓存命中判断, 防唯一 key 旋转造成的上游请求放大)
@@ -1135,7 +1301,13 @@ const server = http.createServer(async (req, res) => {
           try { body = JSON.parse(r.buf.toString()); } catch { send(res, 400, { ok: false, error: "invalid json body" }, cors); return; }
         }
         const data = await routes[u.pathname](u.searchParams, body, req);
-        send(res, 200, { ok: true, data, ts: Date.now() }, cors);
+        // __rawResponse 约定(排行榜 0818): 契约要求裸 JSON 响应体(如 /api/v1/knock 的
+        // {"leaderboard":...}), handler 返回 {__rawResponse: <payload>} 时原样输出, 不套 ok/data 包装。
+        if (data && data.__rawResponse !== undefined) {
+          send(res, 200, data.__rawResponse, cors);
+        } else {
+          send(res, 200, { ok: true, data, ts: Date.now() }, cors);
+        }
       } catch (e) {
         // 错误回显契约: 内部细节只记日志; err.status 由可预期的业务错误(队列满/问财配额等)携带,
         // 其 message 必须为白名单文案(不含 URL/网络细节); 无 status 一律回显静态 "upstream error"

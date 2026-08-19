@@ -1,4 +1,7 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { isTv } from "@/lib/tv";
+import { hostingToken, hostingLayout, hostingLayoutSave } from "@/lib/hosting";
+import { loadJson, saveJson } from "@/lib/storage";
 
 export interface ZoomPanelDef {
   id: string;
@@ -17,16 +20,97 @@ export interface PanelLayout {
   rowWidths: number[][];
 }
 
-export function usePanelZoom(rows: ZoomRowDef[]) {
+export interface PanelZoomOptions {
+  /** 页面标识(持久化隔离): home/goods/fin 各页独立; 缺省 "home" */
+  pageKey?: string;
+}
+
+/** 持久化写入 debounce(ms): toggle 连点只发最后一次, 防服务端写放大 */
+const SAVE_DEBOUNCE_MS = 500;
+
+/**
+ * 面板缩放状态 + 持久化(0819-d: host 版跨设备同步 zoom):
+ * - 托管模式(有 hostingToken): 挂载时 hostingLayout() 拉取恢复(按 pageKey), toggle 后 debounce 写服务端
+ * - 开源模式: localStorage(key: dash:zoom:<pageKey>), 刷新后恢复
+ * - TV 模式(?tv=1): 不持久化, 行为与以往完全一致
+ * - 恢复时校验 id 存在于 rows 才 setZoomedId(防脏数据); 服务端失败静默降级不阻塞看板
+ */
+export function usePanelZoom(rows: ZoomRowDef[], options?: PanelZoomOptions) {
+  const pageKey = options?.pageKey || "home";
   const [zoomedId, setZoomedId] = useState<string | null>(null);
+
+  // 恢复完成前不写回(避免挂载时把初始 null 覆盖掉服务端/本地已存状态)
+  const restoredRef = useRef(false);
+  // 托管模式(有 token)快照 — 挂载时判定一次, 会话内不翻转
+  const hostedRef = useRef(false);
+  // TV 模式: 整个 hook 不持久化(仅内存态)
+  const tvRef = useRef(isTv);
 
   const isZoomed = useCallback((id: string) => zoomedId === id, [zoomedId]);
 
+  // 用户手动操作过 → restore 不覆盖(防"先点击后服务端恢复值到达"竞态覆盖用户选择)
+  const userTouchedRef = useRef(false);
   const toggle = useCallback((id: string) => {
+    userTouchedRef.current = true;
     setZoomedId((prev) => (prev === id ? null : id));
   }, []);
 
-  const reset = useCallback(() => setZoomedId(null), []);
+  const reset = useCallback(() => {
+    userTouchedRef.current = true;
+    setZoomedId(null);
+  }, []);
+
+  /** 恢复值校验: id 必须是当前 rows 里的面板 id(防脏数据/版本错位) */
+  const isValidId = useCallback(
+    (id: string | null): id is string => !!id && rows.some((r) => r.panels.some((p) => p.id === id)),
+    [rows]
+  );
+
+  // 挂载: 恢复持久化 zoom(托管 → 服务端; 开源 → localStorage)
+  useEffect(() => {
+    if (tvRef.current) { restoredRef.current = true; return; }
+    let alive = true;
+    (async () => {
+      const hosted = !!hostingToken();
+      hostedRef.current = hosted;
+      let id: string | null = null;
+      try {
+        if (hosted) {
+          const obj = await hostingLayout();
+          if (alive && obj && typeof obj === "object") id = obj[pageKey] ?? null;
+        } else {
+          id = loadJson<string | null>(`dash:zoom:${pageKey}`, null);
+        }
+      } catch {
+        // 服务端暂不可用: 静默降级为默认布局, 不阻塞首屏(参照 WatchlistPanel)
+      }
+      if (!alive) return;
+      if (isValidId(id) && !userTouchedRef.current) setZoomedId(id);
+      restoredRef.current = true;
+    })();
+    return () => { alive = false; };
+  }, [pageKey, isValidId]);
+
+  // zoomedId 变化 → debounce 写回。写回防抖基线(prevZoomedRef):
+  // 首跑只记录基线不写; 恢复未完成(托管异步 GET)时, 用户已手动操作则立即放行写回,
+  // 否则等待 restore 完成(避免把未恢复的初始态提前写掉, 或把用户操作基线化丢失)
+  const prevZoomedRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (tvRef.current) return;
+    if (prevZoomedRef.current === undefined) { prevZoomedRef.current = zoomedId; return; }
+    if (prevZoomedRef.current === zoomedId) return;
+    prevZoomedRef.current = zoomedId;
+    if (!restoredRef.current && !userTouchedRef.current) return; // 恢复未完成且用户未操作: 等 restore
+    const t = setTimeout(() => {
+      if (hostedRef.current) {
+        // 只传本页 key, 服务端 merge 保证其他页面不受影响
+        hostingLayoutSave({ [pageKey]: zoomedId }).catch(() => { /* 写失败静默, 下次 toggle 再试 */ });
+      } else {
+        saveJson(`dash:zoom:${pageKey}`, zoomedId);
+      }
+    }, SAVE_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [zoomedId, pageKey]);
 
   const layout = useMemo<PanelLayout>(() => {
     const rowHeights = rows.map((r) => r.defaultH);

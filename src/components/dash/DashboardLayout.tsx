@@ -20,9 +20,10 @@ const MemoPanel = memo(function MemoPanel({
   return <C {...props} />;
 });
 
-/** 一屏式大屏: 行高与列宽按缩放状态动态分配 */
-export function DashboardLayout({ rows }: { rows: PanelRowDef[] }) {
-  const { isZoomed, toggle: toggleZoom, layout } = usePanelZoom(rows);
+/** 一屏式大屏: 行高与列宽按缩放状态动态分配。
+ *  pageKey: 页面标识(home/goods/fin), 持久化 zoom 按页隔离(host 版跨设备同步/开源版 localStorage) */
+export function DashboardLayout({ rows, pageKey = "home" }: { rows: PanelRowDef[]; pageKey?: string }) {
+  const { isZoomed, toggle: toggleZoom, layout } = usePanelZoom(rows, { pageKey });
   // 板块资金流向 → 主力净流入排行 联动: 点击板块图选中板块(code+name), 排行面板拉该板块成分股主力净流入
   const [sectorSel, setSectorSel] = useState<{ code: string; name: string } | null>(null);
 
