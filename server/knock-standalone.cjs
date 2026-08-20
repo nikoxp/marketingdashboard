@@ -9,6 +9,8 @@
 // 数据: SQLite 仍在 server/data/knock.db(默认路径, KNOCK_DB env 可覆盖), 与迁移前同一文件,
 //       数据无缝迁移; mrd(:3000) 已移除 initKnock 加载, 避免双进程写同一库。
 // 红线: 不碰 knock.db 数据文件内容; 非 knock 路径一律 404。
+//       根路径 / 例外: 302 跳转官网 www.hermes.cc.cd (Gavin 反馈拍板 2026-08-19),
+//       其余非 knock 路径仍 404。
 "use strict";
 
 const http = require("node:http");
@@ -106,6 +108,13 @@ const routes = createKnockRoutes(db);
 const server = http.createServer(async (req, res) => {
   try {
     const u = new URL(req.url, "http://localhost");
+
+    // 根路径: 302 跳转公司官网 (Gavin 反馈 2026-08-19, 庄子拍板方案1; 目标写死防 open redirect)
+    if (u.pathname === "/") {
+      res.writeHead(302, { Location: "https://www.hermes.cc.cd/" });
+      res.end();
+      return;
+    }
 
     // 仅分发 /api/v1/knock/* 三路由; 其余路径一律 404
     if (!routes[u.pathname]) {

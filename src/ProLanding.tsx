@@ -4,14 +4,14 @@ import { ArrowLeft, ArrowRight, Check, Globe, LineChart, Moon, Plug, Star, Sun, 
 function useTheme() {
   const [dark, setDark] = useState<boolean>(() => {
     try {
-      const saved = localStorage.getItem("mrd-theme");
+      const saved = localStorage.getItem("mrd-theme-v1");
       if (saved) return saved === "dark";
     } catch {}
     return true;
   });
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
-    try { localStorage.setItem("mrd-theme", dark ? "dark" : "light"); } catch {}
+    try { localStorage.setItem("mrd-theme-v1", dark ? "dark" : "light"); } catch {}
   }, [dark]);
   return { dark, toggle: () => setDark((d) => !d) };
 }

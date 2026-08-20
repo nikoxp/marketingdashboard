@@ -14,7 +14,7 @@ const path = require("path");
 
 const { DatabaseSync } = require("node:sqlite");
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 /** 打开(必要时创建)排行榜库并迁移到最新 schema。dbPath 可注入(测试用 :memory:) */
 function openKnockDb(dbPath) {
@@ -42,8 +42,21 @@ function migrate(db) {
       );
       CREATE INDEX IF NOT EXISTS idx_knock_rank ON knock_scores(rate DESC, created_at ASC);
     `);
-    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   }
+  if (ver < 2) {
+    // 榜单页 UTM 引流统计(v1.0.138, 0819-x Gavin 指令): 只记渠道维度, 不采 IP/UA/referrer
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS utm_visits (
+        date     TEXT    NOT NULL,  -- UTC+8 当日 YYYY-MM-DD
+        source   TEXT    NOT NULL,  -- utm_source
+        medium   TEXT    NOT NULL,  -- utm_medium
+        campaign TEXT    NOT NULL,  -- utm_campaign
+        count    INTEGER NOT NULL DEFAULT 1,
+        PRIMARY KEY (date, source, medium, campaign)
+      );
+    `);
+  }
+  db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 }
 
 /** 默认库路径: server/data/knock.db(随 server/data gitignored, 不入库) */

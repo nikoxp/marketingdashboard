@@ -35,6 +35,10 @@ module.exports = function createFutures(ctx) {
   }
 
   /* ---------------- 内盘期货(沪金等):新浪 nf_ ---------------- */
+  // 新浪 nf_ 字段依据(2026-08-19 实锤抓包):
+  //   f[0]=名称 f[1]=时间戳 f[2]=开盘 f[3]=最高 f[4]=最低 f[5]=昨收(夜盘常为0,不可靠)
+  //   f[6]/f[7]=买价/卖价 f[8]=最新价 f[9]=涨跌额 f[10]=昨结算(期货标准涨跌基准)
+  //   f[13]=成交量 f[14]=持仓量 f[16]=时间 f[17]=日期
   function parseSinaDomestic(text) {
     const out = safeRecord(); // 无原型对象: 上游 symbol 作为 key, 杜绝 __proto__ 污染
     const re = /hq_str_(nf_\w+)="([^"]*)"/g;
@@ -42,12 +46,13 @@ module.exports = function createFutures(ctx) {
     while ((m = re.exec(text))) {
       const f = m[2].split(",");
       if (f.length < 17 || !f[0]) continue;
-      const prevSettle = num(f[8]); // f[8]=昨收
-      let price = num(f[5]); // 最新价(夜盘可能为0)
+      const prevSettle = num(f[10]) || num(f[5]); // 昨结算优先(标准涨跌基准), 昨收兜底
+      let price = num(f[8]); // 最新价(夜盘休市可能为0)
       if (!price) {
         const bid = num(f[6]), ask = num(f[7]);
-        price = bid && ask ? +((bid + ask) / 2).toFixed(2) : (bid || ask || prevSettle);
+        price = bid && ask ? +((bid + ask) / 2).toFixed(2) : (bid || ask || prevSettle || 0);
       }
+      const prev = prevSettle || price; // 双无效时 prev=price 防除零
       out[m[1]] = {
         symbol: m[1],
         name: f[0],
@@ -55,9 +60,9 @@ module.exports = function createFutures(ctx) {
         high: num(f[3]),
         low: num(f[4]),
         open: num(f[2]),
-        prev: prevSettle,
-        change: changeOf(price, prevSettle),
-        pct: pctOf(price, prevSettle),
+        prev,
+        change: changeOf(price, prev),
+        pct: pctOf(price, prev),
         time: f[16],
       };
     }

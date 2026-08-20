@@ -36,6 +36,7 @@ async function call(routes, path, { q, body, req } = {}) {
 const LEADERBOARD = "/api/v1/knock/leaderboard";
 const PERCENTILE = "/api/v1/knock/percentile";
 const SUBMIT = "/api/v1/knock/submit";
+const TRACK = "/api/v1/knock/track";
 
 /** 提交一条合法成绩(IP 可变, 便于并发写入测试) */
 async function submit(routes, overrides = {}, ip = "1.2.3.4") {
@@ -195,4 +196,62 @@ test("限流: 每 IP 每分钟 ≤5 次 submit, 第 6 次拒绝 400; 其他 IP �
   // 其他 IP 正常
   const other = await submit(routes, { nickname: "u6", gapMs: 46, rate: 1000 / 46 }, "9.9.9.10");
   assert.strictEqual(other.status, 200);
+});
+
+test("track: 带 UTM 三参 → 固定响应 {ok:true} 且落库 count=1", async () => {
+  const { routes, db } = fresh();
+  const r = await call(routes, TRACK, { q: { utm_source: "mylauncher", utm_medium: "share_image", utm_campaign: "leaderboard" } });
+  assert.strictEqual(r.status, 200);
+  assert.deepStrictEqual(r.payload, { ok: true }, "响应固定 {ok:true}(裸 JSON 不套包装)");
+  const rows = db.prepare("SELECT * FROM utm_visits").all();
+  assert.strictEqual(rows.length, 1);
+  assert.strictEqual(rows[0].source, "mylauncher");
+  assert.strictEqual(rows[0].medium, "share_image");
+  assert.strictEqual(rows[0].campaign, "leaderboard");
+  assert.strictEqual(rows[0].count, 1);
+  assert.match(rows[0].date, /^\d{4}-\d{2}-\d{2}$/, "date = UTC+8 当日 YYYY-MM-DD");
+  // 与当前 UTC+8 日期一致
+  const now = Date.now() + 8 * 3600 * 1000;
+  const expectDate = new Date(now).toISOString().slice(0, 10);
+  assert.strictEqual(rows[0].date, expectDate);
+});
+
+test("track: 同渠道重复上报 → upsert count 递增(不新增行)", async () => {
+  const { routes, db } = fresh();
+  const q = { utm_source: "srcA", utm_medium: "medB", utm_campaign: "camC" };
+  await call(routes, TRACK, { q });
+  await call(routes, TRACK, { q });
+  await call(routes, TRACK, { q });
+  const rows = db.prepare("SELECT * FROM utm_visits").all();
+  assert.strictEqual(rows.length, 1, "同 (date,source,medium,campaign) 只一行");
+  assert.strictEqual(rows[0].count, 3, "count 累加");
+});
+
+test("track: 部分参数缺失 → 落库空串补位; 全空 → 忽略不计数", async () => {
+  const { routes, db } = fresh();
+  // 仅 utm_source
+  const r1 = await call(routes, TRACK, { q: { utm_source: "only_src" } });
+  assert.strictEqual(r1.status, 200);
+  assert.deepStrictEqual(r1.payload, { ok: true });
+  let rows = db.prepare("SELECT * FROM utm_visits").all();
+  assert.strictEqual(rows.length, 1);
+  assert.strictEqual(rows[0].source, "only_src");
+  assert.strictEqual(rows[0].medium, "");
+  assert.strictEqual(rows[0].campaign, "");
+  // 全空(无参)
+  const r2 = await call(routes, TRACK, { q: {} });
+  assert.strictEqual(r2.status, 200);
+  assert.deepStrictEqual(r2.payload, { ok: true });
+  rows = db.prepare("SELECT * FROM utm_visits").all();
+  assert.strictEqual(rows.length, 1, "全空不落库");
+  // 空白串参数视同全空
+  const r3 = await call(routes, TRACK, { q: { utm_source: "  ", utm_medium: "", utm_campaign: "\t" } });
+  assert.strictEqual(r3.status, 200);
+  rows = db.prepare("SELECT * FROM utm_visits").all();
+  assert.strictEqual(rows.length, 1, "空白串视同空, 不计数");
+  // 带前导/尾随空白 → 清洗后计数
+  const r4 = await call(routes, TRACK, { q: { utm_source: "  mylauncher  " } });
+  rows = db.prepare("SELECT * FROM utm_visits").all();
+  assert.strictEqual(rows.length, 2);
+  assert.strictEqual(rows[1].source, "mylauncher", "空白已 trim");
 });

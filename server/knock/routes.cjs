@@ -121,12 +121,26 @@ function upsertScore(db, { nickname, rate, gapMs, samples, region }) {
       `INSERT INTO knock_scores (nickname, rate, gap_ms, samples, region, created_at)
        VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(nickname) DO UPDATE SET
-         rate = excluded.rate, gap_ms = excluded.gap_ms, samples = excluded.samples,
-         region = excluded.region, created_at = excluded.created_at
+        rate = excluded.rate, gap_ms = excluded.gap_ms, samples = excluded.samples,
+        region = excluded.region, created_at = excluded.created_at
        WHERE excluded.rate > knock_scores.rate`
     )
     .run(nickname, rate, gapMs, samples, region || null, Date.now());
   return res.changes > 0;
+}
+
+/** UTC+8 当日 YYYY-MM-DD(榜单页以中国时区为日界; 只做聚合键, 不存时间戳) */
+function utc8DateStr(now = Date.now()) {
+  const d = new Date(now + 8 * 3600 * 1000);
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+}
+
+/** UTM 参数清洗: 去首尾空白; 空/null → null(不计数); 超长截断(防刷爆 DB 行宽) */
+function cleanUtm(raw, maxLen = 128) {
+  if (raw == null) return null;
+  const s = String(raw).trim();
+  if (!s) return null;
+  return s.length > maxLen ? s.slice(0, maxLen) : s;
 }
 
 /**
@@ -205,6 +219,26 @@ function createKnockRoutes(db) {
           leaderboard: topN(db, LB_DEFAULT_LIMIT),
         },
       };
+    },
+
+    // UTM 引流跟踪(0819-x Gavin 指令): 榜单页埋点 fire-and-forget 上报。
+    // 隐私红线: 只记渠道维度(utm_*), 不记 IP / UA / referrer, 与榜单页 footer 隐私声明一致。
+    // 语义: 三参均可选, 全空则忽略不计数; 命中 (date,source,medium,campaign) upsert count+1;
+    //       date = UTC+8 当日 YYYY-MM-DD。复用分发层 apiLimiter + CORS(*), 响应固定 {ok:true}。
+    "/api/v1/knock/track": async (q) => {
+      const source = cleanUtm(q.get("utm_source"));
+      const medium = cleanUtm(q.get("utm_medium"));
+      const campaign = cleanUtm(q.get("utm_campaign"));
+      if (source == null && medium == null && campaign == null) {
+        // 全空: 忽略不计数(如直接访问无参)
+        return { __rawResponse: { ok: true } };
+      }
+      db.prepare(
+        `INSERT INTO utm_visits (date, source, medium, campaign, count)
+         VALUES (?, ?, ?, ?, 1)
+         ON CONFLICT(date, source, medium, campaign) DO UPDATE SET count = count + 1`
+      ).run(utc8DateStr(), source ?? "", medium ?? "", campaign ?? "");
+      return { __rawResponse: { ok: true } };
     },
   };
 }
