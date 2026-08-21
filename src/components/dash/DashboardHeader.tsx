@@ -5,17 +5,19 @@ import { Logo } from "@/components/Logo";
 import { useClock } from "@/hooks/useClock";
 import { isTv } from "@/lib/tv";
 
-type Accent = "cyan" | "violet";
+type Accent = "cyan" | "violet" | "gold";
 
 const SUBTITLE_CLASS: Record<Accent, string> = {
   cyan: "text-cyan-500/80",
   violet: "text-violet-500/80",
+  gold: "text-[#f5c542]/80",
 };
 
 /** 导航链接的 hover 色取与副标题相反的强调色 */
 const LINK_HOVER_CLASS: Record<Accent, string> = {
   cyan: "hover:border-violet-500/60 hover:text-violet-300",
   violet: "hover:border-cyan-500/60 hover:text-cyan-300",
+  gold: "hover:border-[#f5c542]/60 hover:text-[#fde68a]",
 };
 
 export function DashboardHeader({

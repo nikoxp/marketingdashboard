@@ -17,6 +17,7 @@ import { WatchlistPanel } from "@/components/dash/WatchlistPanel";
 import AiDashboard from "./AiDashboard";
 import GoodsDashboard from "./GoodsDashboard";
 import FinDashboard from "./FinDashboard";
+import GoldDashboard from "./GoldDashboard";
 import ProLanding from "./ProLanding";
 import LoginPage from "./pages/LoginPage";
 import { hostingEnabled, hostingToken } from "@/lib/hosting";
@@ -95,10 +96,11 @@ const PANEL_ROWS: PanelRowDef[] = [
 function Dashboard() {
   const { isFullscreen, toggle } = useFullscreen();
   const hosting = useHosting();
-  // 托管模式: 过滤 Pro 入口(保留 商品价格/AI 观察/财报窗口); 开源模式: 原样含 Pro(零回归)
+  // 托管模式: 过滤 Pro 入口(保留 商品价格/AI 观察/黄金观察/财报窗口); 开源模式: 原样含 Pro(零回归)
   const links = useMemo(() => {
     const base = [
       { to: "/goods", label: "商品价格" },
+      { to: "/gold", label: "黄金观察" },
       { to: "/ai", label: "AI 观察" },
       { to: "/fin", label: "财报窗口" },
     ];
@@ -137,6 +139,7 @@ function AppRoutes() {
       <Route path="/" element={<Dashboard />} />
       <Route path="/ai" element={<AiDashboard />} />
       <Route path="/goods" element={<GoodsDashboard />} />
+      <Route path="/gold" element={<GoldDashboard />} />
       <Route path="/fin" element={<FinDashboard />} />
       <Route path="/pro" element={hosting ? <Navigate to="/" replace /> : <ProLanding />} />
     </Routes>

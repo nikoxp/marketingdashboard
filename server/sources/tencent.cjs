@@ -163,20 +163,46 @@ module.exports = function createTencent(ctx) {
   }
 
   /* ---------------- 腾讯分钟线(指数/个股 日内走势) ---------------- */
+  // 外汇(wh*)分钟线: 腾讯 minute 接口对 wh 代码只回 1 个点 → 硬编码东财 USDCNH 盘中分时
+  // (在岸 120.USDCNYC 是每日中间价、分时恒平; 离岸 133.USDCNH 有盘中分时, 走势与在岸一致, 用作迷你图)
+  // 东财 WAF 限流(SSL unexpected eof / curl 56)持续时: 绝不抛错 — 降级返回腾讯 spot 报价
+  // (最新价+日涨跌, 读报价缓存不新增上游调用), 迷你图置空由前端显示占位提示。
+  // 降级带 __ttl 短缓存(2min, 缓存层剥字段) + 本地指数退避(1s→5min): 上游恢复后尽快重试,
+  // 不锁死旧数据、不伪造曲线、不整卡报错。
+  const EM_KLINE_URL =
+    "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=133.USDCNH&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56&klt=1&fqt=1&beg=0&end=20500101&lmt=240";
+  const whMinuteFail = new Map(); // code -> { failAt, failCount }: 东财失败退避(与 quoteBackoff 同构)
+  const minuteBackoffOf = (n) => Math.min(300000, 1000 * 2 ** (n || 0));
+  const whDegraded = (code, q, extra) => {
+    const deg = { code, prec: q?.price ? 4 : 0, points: [], source: q ? "tencent-spot" : "unavailable", degraded: true, __ttl: 120000, ...extra };
+    if (q) { deg.price = q.price; deg.change = q.change; deg.pct = q.pct; deg.time = q.time; }
+    return deg;
+  };
+
   async function handleMinute(code) {
-    // 外汇(wh*): 腾讯 minute 接口对 wh 代码只回 1 个点; 东财仅有离岸 USDCNH 有盘中分时
-    // (在岸 120.USDCNYC 是每日中间价, 分时恒平), 离岸序列走势与在岸一致, 用作迷你图
     if (code.startsWith("wh")) {
-      const url =
-        "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=133.USDCNH&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56&klt=1&fqt=1&beg=0&end=20500101&lmt=240";
-      const json = JSON.parse(await fetchTextAny(url, { referer: "https://quote.eastmoney.com/" }));
-      const pts = (json?.data?.klines || [])
-        .map((s) => {
-          const f = s.split(","); // "2026-08-05 05:01,open,close,high,low,vol" → 0501 / 收盘
-          return { t: f[0].slice(11, 16).replace(":", ""), p: num(f[2]) };
-        })
-        .filter((p) => p.t && p.p > 0);
-      return { code, prec: num(json?.data?.preKPrice), points: pts };
+      const now = Date.now();
+      const f = whMinuteFail.get(code);
+      const inBackoff = f && now - f.failAt < minuteBackoffOf(f.failCount);
+      if (!inBackoff) {
+        try {
+          const json = JSON.parse(await fetchTextAny(EM_KLINE_URL, { referer: "https://quote.eastmoney.com/", timeout: 5000 }));
+          const pts = (json?.data?.klines || [])
+            .map((s) => {
+              const x = s.split(","); // "2026-08-05 05:01,open,close,high,low,vol" → 0501 / 收盘
+              return { t: x[0].slice(11, 16).replace(":", ""), p: num(x[2]) };
+            })
+            .filter((p) => p.t && p.p > 0);
+          if (!pts.length) throw new Error("empty kline");
+          whMinuteFail.delete(code); // 成功复位退避
+          return { code, prec: num(json?.data?.preKPrice), points: pts, source: "eastmoney" };
+        } catch (e) {
+          whMinuteFail.set(code, { failAt: Date.now(), failCount: (f?.failCount || 0) + 1 });
+          // 落败计入退避, 继续走降级返回(不抛错 → 不刷 error 日志)
+        }
+      }
+      // 降级: 引用报价缓存(腾讯 spot, 与报价中心同源) → 最新价+日涨跌; 无缓存时仅标 source=unavailable
+      return whDegraded(code, cache.get(`q:${code}`)?.data);
     }
     // 美股指数(us*)只有 usMinute 接口返回全日序列, minute/query 只给最后一个点
     const url = code.startsWith("us")

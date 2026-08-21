@@ -15,6 +15,12 @@ const { createCache } = require("./lib/cache.cjs");
 const createFetchAny = require("./lib/fetch-any.cjs");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// 分钟线缓存 TTL: 常规 5s(与报价中心同频); 汇率(wh*)降频 2min —
+// 东财 WAF 限流(SSL unexpected eof)主因是频率, 汇率分时 2min 粒度足够且命中率降 24 倍
+const MINUTE_TTL = 5000;
+const FX_MINUTE_TTL = 120000;
+const minuteTtl = (code) => (code && code.startsWith("wh") ? FX_MINUTE_TTL : MINUTE_TTL);
+
 // 运行观测(压测/运维): 仅聚合计数, 无敏感信息; /api/stats 读取
 const stats = { reqs: 0, upstream: 0, blocked: 0, started: Date.now() };
 
@@ -74,6 +80,10 @@ const { handleFinanceMain, handleFinanceBoard, handleFinanceForecast, validPerio
 const srcTreasuries = require("./sources/treasuries.cjs")({ fetchTextAny, num, fs, path });
 const { handleTreasuries, handleTreasuryHistory } = srcTreasuries;
 
+// 黄金观察（25, 0820 Gavin 指令）: 读 gold-monitor 产物文件(零网络依赖) + central-bank-gold SQLite(只读)
+const srcGold = require("./sources/gold.cjs")({ fs, path });
+const { handleGold, handleGoldHistory } = srcGold;
+
 const srcOpenRouter = require("./sources/openrouter.cjs")({ safeRecord, fs, path });
 const { handleOpenRouterUsage } = srcOpenRouter;
 
@@ -86,6 +96,10 @@ const { handleSpotTable, handleChemSpot } = srcSunsirs;
 const srcAiModels = require("./sources/ai-models.cjs")({ fetchText, num, readHistory, writeHistory, bjToday, path, fs });
 const { handleAaModels, handleSpendIndex } = srcAiModels;
 
+// 引流聚合（0820-k t_de577480）: utm_visits/feedback_events(knock.db 只读) + 短链 hits + V2EX 曝光 + metrics
+const srcAcquisition = require("./sources/acquisition.cjs")({ fetchText, fs, bjToday });
+const { handleAcquisition } = srcAcquisition;
+
 // 官网合作咨询（改版5）: 校验 + 落盘 contact.jsonl（不写 state.json）
 const { validateContact, appendContact } = require("./lib/contact.cjs");
 
@@ -94,6 +108,9 @@ const {
   validateAssistant, detectIntent, summarizeNeed, callAssistantLLM, fallbackReply,
   appendAssistantLead, QUESTION_MAX,
 } = require("./lib/assistant.cjs");
+
+// 官网独立反馈（26）: 落盘 feedback-messages.jsonl（校验复用 validateAssistant; 不调 LLM/无 lead_id）
+const { appendFeedback, normalizePage } = require("./lib/feedback.cjs");
 
 // 博客评论 + 阅读量（0818: Gavin 指令 blog 支持回复评论 + 统计阅读量, 方案: mrd 后端代理）
 const {
@@ -269,17 +286,19 @@ const routes = {
     const ids = String(q.get("post_ids") || "").split(",").map((s) => s.trim()).filter(Boolean).slice(0, 100);
     return { views: viewsFor(loadViews(BLOG_VIEWS_FILE), ids) };
   },
-  "/api/minute": async (q) =>
-    cached(`minute:${q.get("code")}`, 5000, () => handleMinute(q.get("code") || "sh000001")),
+  "/api/minute": async (q) => {
+    const code = q.get("code") || "sh000001";
+    return cached(`minute:${code}`, minuteTtl(code), () => handleMinute(code));
+  },
   // 批量分钟线: 将 N 次单独请求合并为 1 次, 大幅降低冷启动爆发请求数
   "/api/batch-minute": async (q) => {
     const codes = parseCsvParam(q.get("codes") || "");
     if (codes.length === 0) return {};
     if (codes.length > 30) codes.length = 30; // 上限防滥用
     const map = {};
-    // 逐个走缓存(每个 code 各自 5s TTL), 但共享一次 HTTP 往返
+    // 逐个走缓存(常规代码 5s TTL, 汇率 wh* 降频 2min), 但共享一次 HTTP 往返
     await Promise.all(codes.map(async (c) => {
-      try { map[c] = await cached(`minute:${c}`, 5000, () => handleMinute(c)); } catch (e) { map[c] = null; console.error("[batch-minute]", c, e?.message || e); }
+      try { map[c] = await cached(`minute:${c}`, minuteTtl(c), () => handleMinute(c)); } catch (e) { map[c] = null; console.error("[batch-minute]", c, e?.message || e); }
     }));
     return map;
   },
@@ -342,6 +361,9 @@ const routes = {
       handleNews(q.get("page") || "1", q.get("size") || "40")
     ),
   "/api/treasuries": async () => cached("treasuries", 30000, () => handleTreasuries()),
+  // 黄金观察（25）: 聚合(8 面板字段) + 历史序列(days=1|7|30), TTL 60s(mrd 轮询风格)
+  "/api/gold": async () => cached("gold:summary", 60000, () => handleGold()),
+  "/api/gold/history": async (q) => cached(`gold:hist:${q.get("days") || "1"}`, 60000, () => handleGoldHistory(q.get("days") || "1")),
   "/api/finance-main": async (q) =>
     cached(`fin-main:${q.get("code")}`, 3600000, () => handleFinanceMain(q.get("code") || "")), // 单公司近12期主指标, 1h缓存
   "/api/finance-board": async (q) => {
@@ -401,6 +423,9 @@ const routes = {
         throw e;
       }
     }),
+  // 引流聚合（0820-k t_de577480）: 治理仪表盘引流区块数据源, 60s 缓存; 内部四源三层 fallback,
+  // 永不整卡报错; 任一源降级时响应带 __ttl:5min 短缓存(上游恢复后尽快重试, 防锁死旧数据)
+  "/api/acquisition": async () => cached("acquisition", 60 * 1000, () => handleAcquisition()),
   "/api/ai-infra": async () => cached("ai-infra", 24 * 3600 * 1000, () => handleAiInfra()), // 财报/定价日更, 24h 缓存
   "/api/mystery-select": async (q) =>
     cached(`ms:${q.get("query")}:${q.get("limit")}:${q.get("page")}`, 60000, () =>
@@ -445,7 +470,7 @@ const routes = {
     // 防烧 token/防刷: 同 IP 3 条/5 分钟(先于 LLM 调用, 超限直接 429); 托管扣减分支跳过(租户额度即限流)
     if (!tenantId && !assistantLimiter(ip)) { const e = new Error("assistant rate limited"); e.status = 429; throw e; }
     const { question, contact, source } = v.value;
-    const reply = (await callAssistantLLM(question)) || fallbackReply();
+    const reply = (await callAssistantLLM(question, OPC_STATUS_FILE)) || fallbackReply();
     const hits = detectIntent(question);
     let lead_id = null;
     if (hits.length > 0) {
@@ -466,6 +491,24 @@ const routes = {
       lead_id = `${saved.ts}_${String(ip).replace(/[^0-9a-f.]/gi, "_").slice(0, 40)}`;
     }
     return { reply, intent_hit: hits.length > 0, intent_keywords: hits, lead_id };
+  },
+  // ---- 官网独立反馈（26, 0820 Gavin 拍板）: 校验 + 同 IP 限频 + 落盘 feedback-messages.jsonl ----
+  // 悬浮反馈按钮用独立反馈表单: 不复用 AI 助理弹窗/问答链路(不调 LLM/无意向判定/无 lead_id),
+  // 不并入 assistant-leads.jsonl(不碰其语义与 cron 登记流程); question/contact 规则复用
+  // validateAssistant(同源单点维护); 埋点由前端自行打 /api/v1/knock/feedback(本卡不动 knock.db)。
+  "/api/feedback": async (_q, body, req) => {
+    const v = validateAssistant(body);
+    if (!v.ok) { const e = new Error(v.error); e.status = 400; throw e; }
+    const ip = clientIp(req);
+    // 防 spam: 同 IP 1 小时 ≤3 条(独立限流器, 不与 contact/assistant 共享计数); 超限 429 中性文案
+    if (!feedbackLimiter(ip)) { const e = new Error("提交太频繁了，请稍后再试"); e.status = 429; throw e; }
+    const { question, contact, source } = v.value;
+    const page = normalizePage(body && body.page); // 白名单校验(blog/opc/company), 未知忽略防注入
+    const rec = { ts: new Date().toISOString(), ip, question, contact };
+    if (page) rec.page = page;
+    if (source) rec.source = source; // SOURCE_ALLOW 白名单(blog_feedback 已允许)
+    appendFeedback(FEEDBACK_DATA_DIR, rec);
+    return { received: true, ts: rec.ts };
   },
   // ---- OPC 透明办公室 demo 体验（12a）----
   "/api/opc/demo": async (_q, body, req) => {
@@ -840,6 +883,12 @@ const ASSISTANT_DATA_DIR = path.join(__dirname, "data");
 const ASSISTANT_RATE_WINDOW_MS = 5 * 60 * 1000; // 5 分钟窗口
 const ASSISTANT_RATE_MAX = 3;                   // 同 IP 最多 3 条/5 分钟
 const assistantLimiter = makeLimiter(ASSISTANT_RATE_WINDOW_MS, ASSISTANT_RATE_MAX);
+
+// 官网独立反馈（26）: 落盘目录 + 同 IP 1 小时 ≤3 条限频（独立限流器, 不与 contact/assistant 共享计数）
+const FEEDBACK_DATA_DIR = path.join(__dirname, "data");
+const FEEDBACK_RATE_WINDOW_MS = 60 * 60 * 1000; // 1 小时窗口
+const FEEDBACK_RATE_MAX = 3;                    // 同 IP 最多 3 条/小时
+const feedbackLimiter = makeLimiter(FEEDBACK_RATE_WINDOW_MS, FEEDBACK_RATE_MAX);
 
 // 启动时把预设表同步成 presets.json（供 opc_demo_dispatch.py 读取，单一事实源；服务端仍是硬编码白名单）
 try {
@@ -1248,8 +1297,10 @@ const server = http.createServer(async (req, res) => {
     // status/history/SSE 流为简单 GET(无自定义头)不触发 preflight, 由响应 ACAO 放行。
     // 官网合作咨询(改版5): /api/contact 同走 www.hermes.cc.cd 白名单(落地页表单跨源提交)。
     // 官网 AI 助理(0818-a P0): /api/assistant 同走白名单(落地页 AI 问答表单跨源提交)。
+    // 官网独立反馈(26): /api/feedback 同走白名单(blog 悬浮反馈表单跨源提交)。
+    // 引流聚合(0820-k t_de577480): /api/acquisition 同走白名单(governance 引流区块跨源读取)。
     // 博客评论+阅读量(0818): /api/blog/ 同走白名单(www Pages 站 blog 评论区跨源读写)。
-    if (req.method === "OPTIONS" && (u.pathname.startsWith("/api/opc/") || u.pathname.startsWith("/api/blog/") || u.pathname === "/api/contact" || u.pathname === "/api/visits" || u.pathname === "/api/token-stats" || u.pathname === "/api/assistant")) {
+    if (req.method === "OPTIONS" && (u.pathname.startsWith("/api/opc/") || u.pathname.startsWith("/api/blog/") || u.pathname === "/api/contact" || u.pathname === "/api/visits" || u.pathname === "/api/token-stats" || u.pathname === "/api/assistant" || u.pathname === "/api/feedback" || u.pathname === "/api/acquisition")) {
       const cors = opcCorsHeaders(req);
       if (cors["Access-Control-Allow-Origin"] == null) {
         send(res, 403, { ok: false, error: "forbidden" }, cors);
@@ -1267,7 +1318,7 @@ const server = http.createServer(async (req, res) => {
       stats.reqs++;
       const ip = clientIp(req);
       trackActiveIp(ip);
-      const cors = u.pathname.startsWith("/api/opc/") || u.pathname.startsWith("/api/blog/") || u.pathname === "/api/contact" || u.pathname === "/api/visits" || u.pathname === "/api/token-stats" || u.pathname === "/api/assistant"
+      const cors = u.pathname.startsWith("/api/opc/") || u.pathname.startsWith("/api/blog/") || u.pathname === "/api/contact" || u.pathname === "/api/visits" || u.pathname === "/api/token-stats" || u.pathname === "/api/assistant" || u.pathname === "/api/feedback" || u.pathname === "/api/acquisition"
         ? opcCorsHeaders(req)
         : corsHeadersFor(req);
       // 按 IP 限流(先于缓存命中判断, 防唯一 key 旋转造成的上游请求放大)

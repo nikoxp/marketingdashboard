@@ -89,6 +89,7 @@ export default function FinDashboard() {
           { to: "/", label: "市场驾驶舱" },
           { to: "/ai", label: "AI 观察" },
           { to: "/goods", label: "商品价格" },
+          { to: "/gold", label: "黄金观察" },
         ]}
         isFullscreen={isFullscreen}
         onToggleFullscreen={toggle}

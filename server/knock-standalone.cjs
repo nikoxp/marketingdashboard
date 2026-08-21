@@ -116,6 +116,15 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // [0820-g] /go/* 短链: bare domain (hermes.cc.cd) 保留路径 302 到 www —— 短链体系以 www 为准,
+    // bare 直接 404 会丢路径; 302 后由 www 侧 _worker.js 统一小写匹配 + 302 + 点击计数。
+    // 目标拼接写死前缀防 open redirect, pathname 原样保留(大小写交给 www worker 归一)。
+    if (u.pathname === "/go" || u.pathname === "/go/" || u.pathname.indexOf("/go/") === 0) {
+      res.writeHead(302, { Location: "https://www.hermes.cc.cd" + u.pathname, "Cache-Control": "no-store" });
+      res.end();
+      return;
+    }
+
     // 仅分发 /api/v1/knock/* 三路由; 其余路径一律 404
     if (!routes[u.pathname]) {
       send(res, 404, { ok: false, error: "not found" });
@@ -143,7 +152,8 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    // 解析 POST body(JSON); 非 POST 无 body, 与 index.cjs 语义一致(submit 仅接受 POST 带体)
+    // 解析 POST body(JSON); 空 body(如 GET 语义的 feedback 上报走 POST 无体) → undefined, 不报错。
+    // submit 带体照常解析; 非 POST 无 body, 与 index.cjs 语义一致。
     let body;
     if (req.method === "POST") {
       const r = await readBodyWithLimit(req, BODY_LIMIT);
@@ -151,9 +161,14 @@ const server = http.createServer(async (req, res) => {
         send(res, 413, { ok: false, error: "payload too large" });
         return;
       }
-      try { body = JSON.parse(r.buf.toString()); } catch {
-        send(res, 400, { ok: false, error: "invalid json body" });
-        return;
+      const raw = r.buf.toString().trim();
+      if (!raw) {
+        body = undefined;
+      } else {
+        try { body = JSON.parse(raw); } catch {
+          send(res, 400, { ok: false, error: "invalid json body" });
+          return;
+        }
       }
     }
 
@@ -173,5 +188,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`[knock] 手速排行榜独立进程已启动 — :${PORT}/api/v1/knock/{leaderboard,percentile,submit} (SQLite)`);
+  console.log(`[knock] 手速排行榜独立进程已启动 — :${PORT}/api/v1/knock/{leaderboard,percentile,submit,track,feedback} (SQLite)`);
 });

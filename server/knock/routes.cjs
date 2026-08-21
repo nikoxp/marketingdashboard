@@ -20,6 +20,10 @@ const REGION_MAX = 16; // 国家/地区码最长(如 "zh-CN")
 const SUBMIT_WINDOW_MS = 60 * 1000;
 const SUBMIT_MAX_PER_WINDOW = 5;
 
+// 反馈埋点白名单(0820-fb): 页面与动作各白名单校验, 非法一律忽略不计数
+const FEEDBACK_PAGES = new Set(["home", "opc", "blog", "leaderboard"]);
+const FEEDBACK_ACTIONS = new Set(["open", "submit"]);
+
 /** 携带 HTTP 状态码的业务错误(index.cjs 错误回显契约: e.status + 白名单文案) */
 function httpError(status, message) {
   const e = new Error(message);
@@ -238,6 +242,27 @@ function createKnockRoutes(db) {
          VALUES (?, ?, ?, ?, 1)
          ON CONFLICT(date, source, medium, campaign) DO UPDATE SET count = count + 1`
       ).run(utc8DateStr(), source ?? "", medium ?? "", campaign ?? "");
+      return { __rawResponse: { ok: true } };
+    },
+
+    // 全站悬浮反馈按钮转化统计(0820-fb Gavin 指令): 各页反馈 open/submit 计数埋点。
+    // 提交内容复用 /api/assistant(不落这里), 本端点只做转化计数。
+    // 隐私红线(与 utm_visits 同口径): 只记维度(page/action), 不记 IP/UA/referrer。
+    // 语义: page/action 各白名单校验, 缺参或非法 → {ok:true} 忽略不计数(fire-and-forget);
+    //       命中 (date,page,action) upsert count+1, date = UTC+8 当日 YYYY-MM-DD。
+    //       复用分发层 apiLimiter + CORS(*), 响应固定 {ok:true}。
+    "/api/v1/knock/feedback": async (q) => {
+      const page = String(q.get("page") || "").trim();
+      const action = String(q.get("action") || "").trim();
+      if (!FEEDBACK_PAGES.has(page) || !FEEDBACK_ACTIONS.has(action)) {
+        // 缺参/非法维度: 静默忽略不计数
+        return { __rawResponse: { ok: true } };
+      }
+      db.prepare(
+        `INSERT INTO feedback_events (date, page, action, count)
+         VALUES (?, ?, ?, 1)
+         ON CONFLICT(date, page, action) DO UPDATE SET count = count + 1`
+      ).run(utc8DateStr(), page, action);
       return { __rawResponse: { ok: true } };
     },
   };

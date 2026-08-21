@@ -70,24 +70,33 @@ module.exports = function createFutures(ctx) {
   }
 
   /* ---------------- 加密货币(Binance 主源 + OKX 兜底, fetch/curl 双通道) ---------------- */
-  async function fetchJsonAny(urls) {
+  // Binance/OKX 直连被墙(2026-08-20 实锤: 直连超时 000, 走本机 sing-box 代理 127.0.0.1:7890 = 200/0.6s)。
+  // BTC 源统一走代理; 环境变量 MRD_PROXY > HTTPS_PROXY 可覆盖(方案B 通用性, 托管部署可配)。
+  const BTC_PROXY = process.env.MRD_PROXY || process.env.HTTPS_PROXY || "http://127.0.0.1:7890";
+
+  async function fetchJsonAny(urls, extra) {
     // 上游 URL 列表恒为单元素, 双通道统一走 fetchWithFallback(见 lib/fetch-any.cjs)
-    const text = await fetchWithFallback(urls[0], { referer: "https://www.binance.com/" });
+    const text = await fetchWithFallback(urls[0], { referer: "https://www.binance.com/", ...(extra || {}) });
     return JSON.parse(text);
   }
 
   async function fetchBtc() {
     try {
-      const j = await fetchJsonAny(["https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT"]);
+      const j = await fetchJsonAny(["https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT"], { proxy: BTC_PROXY });
+      console.log("[futures-btc] binance ok via proxy", BTC_PROXY); // 代理生效证据(验收日志点)
       return {
         symbol: "BTCUSDT", name: "BTC/USDT", price: num(j.lastPrice), prev: num(j.prevClosePrice),
         open: num(j.openPrice), high: num(j.highPrice), low: num(j.lowPrice),
         change: num(j.priceChange), pct: num(j.priceChangePercent), time: "",
       };
-    } catch { /* Binance 不可达时走 OKX */ }
-    const j = await fetchJsonAny(["https://www.okx.com/api/v5/market/ticker?instId=BTC-USDT"]);
+    } catch (e) {
+      // Binance 不可达(代理挂/上游挂)时走 OKX; 失败原因留日志供降级路径排查
+      console.error("[futures-btc] binance fail -> okx:", e?.message || e);
+    }
+    const j = await fetchJsonAny(["https://www.okx.com/api/v5/market/ticker?instId=BTC-USDT"], { proxy: BTC_PROXY });
     const d = j?.data?.[0];
     if (!d) throw new Error("btc blocked");
+    console.log("[futures-btc] okx ok via proxy", BTC_PROXY);
     const price = num(d.last);
     const prev = num(d.open24h);
     return {
@@ -190,8 +199,8 @@ module.exports = function createFutures(ctx) {
     if (code === "BTCUSDT") {
       try {
         const [klines, ticker] = await Promise.all([
-          fetchJsonAny(["https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=240"]),
-          fetchJsonAny(["https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT"]),
+          fetchJsonAny(["https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=240"], { proxy: BTC_PROXY }),
+          fetchJsonAny(["https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT"], { proxy: BTC_PROXY }),
         ]);
         const pts = klines.map((k) => ({ t: fmtHHMM(new Date(k[0])), p: num(k[4]) }));
         return { code, prec: num(ticker.prevClosePrice), points: pts };

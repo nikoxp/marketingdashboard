@@ -37,6 +37,7 @@ const LEADERBOARD = "/api/v1/knock/leaderboard";
 const PERCENTILE = "/api/v1/knock/percentile";
 const SUBMIT = "/api/v1/knock/submit";
 const TRACK = "/api/v1/knock/track";
+const FEEDBACK = "/api/v1/knock/feedback";
 
 /** 提交一条合法成绩(IP 可变, 便于并发写入测试) */
 async function submit(routes, overrides = {}, ip = "1.2.3.4") {
@@ -254,4 +255,73 @@ test("track: 部分参数缺失 → 落库空串补位; 全空 → 忽略不计�
   rows = db.prepare("SELECT * FROM utm_visits").all();
   assert.strictEqual(rows.length, 2);
   assert.strictEqual(rows[1].source, "mylauncher", "空白已 trim");
+});
+
+test("feedback: 同维度 3 次上报 → 固定 {ok:true} 且单行 count=3(upsert)", async () => {
+  const { routes, db } = fresh();
+  const q = { page: "home", action: "open" };
+  for (let i = 0; i < 3; i++) {
+    const r = await call(routes, FEEDBACK, { q });
+    assert.strictEqual(r.status, 200);
+    assert.deepStrictEqual(r.payload, { ok: true }, "响应固定 {ok:true}(裸 JSON 不套包装)");
+  }
+  const rows = db.prepare("SELECT * FROM feedback_events").all();
+  assert.strictEqual(rows.length, 1, "同 (date,page,action) 只一行");
+  assert.strictEqual(rows[0].page, "home");
+  assert.strictEqual(rows[0].action, "open");
+  assert.strictEqual(rows[0].count, 3, "count 累加");
+  assert.match(rows[0].date, /^\d{4}-\d{2}-\d{2}$/, "date = UTC+8 当日 YYYY-MM-DD");
+  const now = Date.now() + 8 * 3600 * 1000;
+  assert.strictEqual(rows[0].date, new Date(now).toISOString().slice(0, 10));
+});
+
+test("feedback: 白名单校验 — page=evil / action=evil → {ok:true} 且不计数", async () => {
+  const { routes, db } = fresh();
+  const r1 = await call(routes, FEEDBACK, { q: { page: "evil", action: "open" } });
+  assert.strictEqual(r1.status, 200);
+  assert.deepStrictEqual(r1.payload, { ok: true });
+  const r2 = await call(routes, FEEDBACK, { q: { page: "home", action: "evil" } });
+  assert.strictEqual(r2.status, 200);
+  assert.deepStrictEqual(r2.payload, { ok: true });
+  const r3 = await call(routes, FEEDBACK, { q: { page: "home", action: "OPEN" } });
+  assert.strictEqual(r3.status, 200, "大小写敏感: OPEN 非法");
+  const n = db.prepare("SELECT COUNT(*) AS n FROM feedback_events").get().n;
+  assert.strictEqual(n, 0, "非法维度全部忽略不计数");
+});
+
+test("feedback: 缺参 → {ok:true} 不计数(含空白串)", async () => {
+  const { routes, db } = fresh();
+  for (const q of [{}, { page: "home" }, { action: "open" }, { page: "  ", action: "" }]) {
+    const r = await call(routes, FEEDBACK, { q });
+    assert.strictEqual(r.status, 200);
+    assert.deepStrictEqual(r.payload, { ok: true });
+  }
+  const n = db.prepare("SELECT COUNT(*) AS n FROM feedback_events").get().n;
+  assert.strictEqual(n, 0, "缺参一律不计数");
+});
+
+test("feedback: 不同 page/action 分行; 不同日期分行", async () => {
+  const { routes, db } = fresh();
+  await call(routes, FEEDBACK, { q: { page: "home", action: "open" } });
+  await call(routes, FEEDBACK, { q: { page: "home", action: "submit" } });
+  await call(routes, FEEDBACK, { q: { page: "opc", action: "open" } });
+  await call(routes, FEEDBACK, { q: { page: "leaderboard", action: "submit" } });
+  await call(routes, FEEDBACK, { q: { page: "blog", action: "open" } });
+  // 预插一条历史日期(昨天)的同维度行 → 不覆盖当天, 各自成行
+  const yesterday = new Date(Date.now() + 8 * 3600 * 1000 - 24 * 3600 * 1000).toISOString().slice(0, 10);
+  db.prepare("INSERT INTO feedback_events (date, page, action, count) VALUES (?, 'home', 'open', 1)")
+    .run(yesterday);
+  const rows = db.prepare("SELECT date, page, action, count FROM feedback_events ORDER BY page, action, date").all();
+  assert.strictEqual(rows.length, 6, "不同 page/action + 不同日期 = 6 行");
+  assert.deepStrictEqual(
+    rows.map((r) => `${r.page}/${r.action}/${r.date}`),
+    [
+      "blog/open/" + new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10),
+      "home/open/" + yesterday,
+      "home/open/" + new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10),
+      "home/submit/" + new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10),
+      "leaderboard/submit/" + new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10),
+      "opc/open/" + new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10),
+    ]
+  );
 });

@@ -6,8 +6,8 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const {
-  validateAssistant, detectIntent, summarizeNeed, fallbackReply, appendAssistantLead,
-  INTENT_KEYWORDS, QUESTION_MAX, NEED_DETAIL_MAX,
+  validateAssistant, detectIntent, summarizeNeed, readMemberCount, assistantSystemPrompt,
+  fallbackReply, appendAssistantLead, INTENT_KEYWORDS, QUESTION_MAX, NEED_DETAIL_MAX,
 } = require("./lib/assistant.cjs");
 
 test("合法提交通过: 问题必填 + 邮箱可选", () => {
@@ -24,6 +24,11 @@ test("合法提交通过: 不带联系方式（contact 置 null）", () => {
 
 test("source 白名单: demo_report 通过并回传, 未知来源忽略置 null（防 jsonl 注入）", () => {
   assert.equal(validateAssistant({ question: "托管版什么时候上线", source: "demo_report" }).value.source, "demo_report");
+  // 0820-fb-2b/26: blog 悬浮反馈独立表单来源（26 已并入 SOURCE_ALLOW）
+  assert.equal(validateAssistant({ question: "托管版什么时候上线", source: "blog_feedback" }).value.source, "blog_feedback");
+  // 0820-fb-3: 首页/opc 悬浮反馈来源（同一 SOURCE_ALLOW 扩展）
+  assert.equal(validateAssistant({ question: "托管版什么时候上线", source: "home_feedback" }).value.source, "home_feedback");
+  assert.equal(validateAssistant({ question: "托管版什么时候上线", source: "opc_feedback" }).value.source, "opc_feedback");
   assert.equal(validateAssistant({ question: "托管版什么时候上线", source: "hacker\" ; rm -rf" }).value.source, null);
   assert.equal(validateAssistant({ question: "托管版什么时候上线", source: "   " }).value.source, null);
   assert.equal(validateAssistant({ question: "托管版什么时候上线" }).value.source, null);
@@ -106,6 +111,72 @@ test("fallbackReply 守红线: 不含价格/日期/承诺", () => {
   assert.ok(!/\d+\.?\d*\s*(元|美元|美元|USD|CNY|¥|\$|月)/.test(r), "不应报价");
   assert.ok(!/202[6-9]|月底|下周|下月/.test(r), "不应承诺时间");
   assert.ok(r.includes("筹备中"), "应含「筹备中」口径");
+});
+
+/* ---- 0820: 成员数动态化（8→9 漏改实锤根治） ---- */
+
+// 生产 status.json 路径（与 index.cjs OPC_STATUS_FILE 同源; dist 静态目录为运行时事实源）
+const OPC_STATUS_FILE = path.join(__dirname, "..", "dist", "company", "opc", "status.json");
+
+test("readMemberCount: 真实 status.json 读成员数(members.length=9)", () => {
+  assert.ok(fs.existsSync(OPC_STATUS_FILE), "status.json 应存在（opc_collect.py 实时双写）");
+  assert.equal(readMemberCount(OPC_STATUS_FILE), 9);
+});
+
+test("readMemberCount: 缺文件/坏 JSON/不传 → fallback 9（零回归）", () => {
+  assert.equal(readMemberCount(null), 9);
+  assert.equal(readMemberCount("/tmp/definitely-not-exists-status.json"), 9);
+  const bad = path.join(os.tmpdir(), "bad-status.json");
+  fs.writeFileSync(bad, "{not json!!");
+  assert.equal(readMemberCount(bad), 9);
+});
+
+test("readMemberCount: members 为空数组 → fallback 9（不答 0 个成员）", () => {
+  const empty = path.join(os.tmpdir(), "empty-status.json");
+  fs.writeFileSync(empty, JSON.stringify({ members: [] }));
+  assert.equal(readMemberCount(empty), 9);
+});
+
+test("readMemberCount: 成员数变化时动态跟随（10 人 mock → 10, 机制根治验证）", () => {
+  const ten = path.join(os.tmpdir(), "ten-status.json");
+  fs.writeFileSync(ten, JSON.stringify({ members: Array.from({ length: 10 }, (_, i) => ({ name: "m" + i })) }));
+  assert.equal(readMemberCount(ten), 10);
+});
+
+test("assistantSystemPrompt: 成员数无硬编码「8」残留, 真实文件 → 9 人口径", () => {
+  const p = assistantSystemPrompt(OPC_STATUS_FILE);
+  assert.ok(!p.includes("8 个"), "不应残留硬编码「8 个」");
+  assert.ok(p.includes("1 位创始人 + 9 个独立 AI profile"), "模板占位应注入 9");
+  assert.ok(p.includes("9 个 AI 成员"), "透明办公室描述应注入 9");
+});
+
+test("assistantSystemPrompt: 文件缺失/不传 → fallback 9（与验收卡 25a 一致）", () => {
+  const p = assistantSystemPrompt(null);
+  assert.ok(p.includes("1 位创始人 + 9 个独立 AI profile"));
+  assert.ok(p.includes("9 个 AI 成员"));
+  assert.ok(!p.includes("8 个"));
+});
+
+test("assistantSystemPrompt: 动态跟随成员数（10 人 mock → 10 人口径）", () => {
+  const ten = path.join(os.tmpdir(), "ten-status.json");
+  fs.writeFileSync(ten, JSON.stringify({ members: Array.from({ length: 10 }, (_, i) => ({ name: "m" + i })) }));
+  const p = assistantSystemPrompt(ten);
+  assert.ok(p.includes("1 位创始人 + 10 个独立 AI profile"));
+  assert.ok(p.includes("10 个 AI 成员"));
+});
+
+test("assistantSystemPrompt: 话术红线 1-6 条/产品事实/域名不变（不动红线核查）", () => {
+  const p = assistantSystemPrompt(OPC_STATUS_FILE);
+  // 红线 1: 托管版筹备中
+  assert.ok(p.includes("筹备中") && p.includes("不接受预定"), "红线 1 筹备中口径");
+  // 红线 2: 开源版可自行部署
+  assert.ok(p.includes("开源版是免费公开的，可自行部署使用"), "红线 2 开源版");
+  // 红线 3-6: 简短/不用表情/不编造/引导补充场景
+  assert.ok(p.includes("回答简短") && p.includes("表情符号") && p.includes("不编造") && p.includes("补充一下你的使用场景"));
+  // 产品事实/域名仍准（0820 核查结论）
+  assert.ok(p.includes("开源（MIT）") && p.includes("零 API key") && p.includes("GitHub 免费公开"));
+  assert.ok(p.includes("mylauncher") && p.includes("gold-monitor") && p.includes("脚本宝"));
+  assert.ok(p.includes("https://www.hermes.cc.cd"), "官网域名仍为准");
 });
 
 test("appendAssistantLead 追加落盘 jsonl(意向命中记录, 含 need_detail 结构化字段)", () => {

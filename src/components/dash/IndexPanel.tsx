@@ -41,6 +41,9 @@ export function IndexPanel({ className = "", ...zoomProps }: { className?: strin
             {g.defs.map((d) => {
               const m = minutes?.[d.code];
               const q = quotes?.[d.code];
+              // 汇率(wh*)分时降级: 东财限流失败时服务端返回 points:[] + degraded:true,
+              // 迷你图置空, 显示诚实占位(最新价+日涨跌仍由报价中心提供, 绝不整卡报错/伪造曲线)
+              const fxDegraded = d.code.startsWith("wh") && m != null && (m.degraded || m.points.length <= 1);
               return (
                 <QuoteRow
                   key={d.code}
@@ -51,6 +54,7 @@ export function IndexPanel({ className = "", ...zoomProps }: { className?: strin
                   // 成交额: 仅非美股有(腾讯口径)
                   amount={q?.amount && d.region !== "US" ? fmtWan(q.amount) : undefined}
                   sparkData={m && m.points.length > 1 ? { points: m.points, prec: m.prec, session: d.region === "CN" ? "ashare" : "h24" } : undefined}
+                  sparkNote={fxDegraded ? "分时暂不可用·上游限流" : undefined}
                 />
               );
             })}

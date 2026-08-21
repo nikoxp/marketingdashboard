@@ -27,6 +27,7 @@ interface RowSharedProps {
   subtitle?: string;
   sp: { points: { t: string; p: number }[]; prec: number } | null;
   sparkData?: QuoteRowProps["sparkData"];
+  sparkNote?: string;
   p: number | undefined;
   pc: number | undefined;
 }
@@ -161,7 +162,7 @@ function CompactRow({ basis, Tag, rootRef, onClick, className, active, accent, b
 }
 
 /* ================= 变体 2: index 布局(全球指数) ================= */
-function IndexRow({ Tag, rootRef, onClick, className, active, badge, name, subtitle, sp, sparkData, p, pc, amount }: IndexRowProps) {
+function IndexRow({ Tag, rootRef, onClick, className, active, badge, name, subtitle, sp, sparkData, sparkNote, p, pc, amount }: IndexRowProps) {
   return (
     <Tag
       ref={(el: HTMLElement | null) => { rootRef.current = el; }}
@@ -189,6 +190,8 @@ function IndexRow({ Tag, rootRef, onClick, className, active, badge, name, subti
         <div className="flex h-[16px] min-w-0 items-center self-center">
           {sp && sp.points.length > 1 ? (
             <Spark points={sp.points} prec={sp.prec} width={120} height={16} fluid emptyLabel="—" session={sparkData?.session || "ashare"} />
+          ) : sparkNote ? (
+            <span className="truncate text-[10px] text-amber-400/80" title={sparkNote}>{sparkNote}</span>
           ) : (
             <span className="text-[10px] text-slate-600">——</span>
           )}
@@ -411,7 +414,7 @@ function PlainGridRow({ variant, Tag, rootRef, onClick, active, accent, rank, ba
 /* ================= 主组件: hooks 预处理 + 变体分发 ================= */
 export const QuoteRow = memo(function QuoteRow({
   code, name, price, pct, tag, rank, amount, turnover, spark, boards, flow, variant = "plain", active, onClick, onRemove,
-  unit, sparkData, accent, badge, basis, className, extraCols, leadingCols, sparkExtra,
+  unit, sparkData, sparkNote, accent, badge, basis, className, extraCols, leadingCols, sparkExtra,
 }: QuoteRowProps) {
   // 行宽自适应: 实测宽度决定资金流标签形态(主力净额/净占比 ↔ 净/占)
   // 仅 flow 模式需要; compact 模式无需
@@ -430,7 +433,12 @@ export const QuoteRow = memo(function QuoteRow({
   const needsVisible = (spark && !sparkData) || boards || flow;
   const [visible, setVisible] = useState(isTv || !needsVisible);
   useEffect(() => {
-    if (isTv || !needsVisible) return;
+    // 懒加载依赖就绪(sparkData/boards/flow 到达)后强制可见 — 否则 IO 未触发过的行(面板底部)
+    // 会永远 visible=false, 报价订阅禁用 → 价格空态"—"(0820-25 实锤: BTC 行)
+    if (isTv || !needsVisible) {
+      setVisible(true);
+      return;
+    }
     const el = rootRef.current;
     if (!el) return;
     const io = new IntersectionObserver((entries) => {
@@ -466,7 +474,7 @@ export const QuoteRow = memo(function QuoteRow({
   const Tag: RowTag = onClick ? "button" : "div";
   const ratioBar = fl ? Math.min(100, Math.abs(fl.netRatio) * 2) : 0;
   const subtitle = unit ?? code;
-  const shared = { Tag, rootRef, onClick, className, active, name, subtitle, sp, sparkData, p, pc };
+  const shared = { Tag, rootRef, onClick, className, active, name, subtitle, sp, sparkData, sparkNote, p, pc };
 
   if (variant === "compact") {
     return <CompactRow {...shared} variant={variant} basis={basis} accent={accent} badge={badge} pct={pc} />;

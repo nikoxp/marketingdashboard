@@ -14,7 +14,7 @@ const path = require("path");
 
 const { DatabaseSync } = require("node:sqlite");
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 /** 打开(必要时创建)排行榜库并迁移到最新 schema。dbPath 可注入(测试用 :memory:) */
 function openKnockDb(dbPath) {
@@ -53,6 +53,20 @@ function migrate(db) {
         campaign TEXT    NOT NULL,  -- utm_campaign
         count    INTEGER NOT NULL DEFAULT 1,
         PRIMARY KEY (date, source, medium, campaign)
+      );
+    `);
+  }
+  if (ver < 3) {
+    // 全站悬浮反馈按钮转化统计(0820-fb Gavin 指令): 各页反馈 open/submit 计数。
+    // 提交内容复用 /api/assistant(不落这里), 本表只做转化计数。
+    // 隐私红线(与 utm_visits 同口径): 只记维度, 不采 IP/UA/referrer。
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS feedback_events (
+        date   TEXT    NOT NULL,  -- UTC+8 当日 YYYY-MM-DD
+        page   TEXT    NOT NULL,  -- home | opc | blog | leaderboard
+        action TEXT    NOT NULL,  -- open | submit
+        count  INTEGER NOT NULL DEFAULT 1,
+        PRIMARY KEY (date, page, action)
       );
     `);
   }

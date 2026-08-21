@@ -32,6 +32,8 @@ export interface QuoteRowProps {
     prec: number;
     session?: "ashare" | "h24" | "daily";
   };
+  /** 分时区占位文本(降级提示, 如汇率 "分时暂不可用·上游限流") — 无分时数据时替代 "——" 诚实显示 */
+  sparkNote?: string;
   /** 左侧彩色 accent 竖条(商品面板强调色) */
   accent?: string;
   /** 名称前短徽标(IndexPanel 传地区简写: CN/US/HK/FX) */

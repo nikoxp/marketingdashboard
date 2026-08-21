@@ -173,6 +173,15 @@ export interface MinuteData {
   code: string;
   prec: number;
   points: { t: string; p: number }[];
+  /** 数据源标注: "eastmoney" 正常分时 / "tencent-spot" 东财失败降级腾讯实时价 / "unavailable" 无可用源 */
+  source?: string;
+  /** 降级标志: 上游分时不可用, 前端显示占位提示(最新价+日涨跌仍正常, 不伪造曲线) */
+  degraded?: boolean;
+  /** 降级时携带的腾讯 spot 快照(最新价/日涨跌/时间) */
+  price?: number;
+  change?: number;
+  pct?: number;
+  time?: string;
 }
 
 /** 期货日线K线(归一化) */
@@ -528,7 +537,93 @@ export const api = {
   spendIndex: () => get<SpendIndexResp>(`/api/spend-index`),
   /** AI 基础设施资本出清与复合 ROI(2022-2035 历史+预测) */
   aiInfra: () => get<AiInfraResp>(`/api/ai-infra`),
+  /** 黄金观察(25): 聚合(8 面板字段), 数据来自 gold-monitor 管道(60min 级) */
+  gold: () => get<GoldResp>(`/api/gold`),
+  /** 黄金历史序列: days=1|7|30(同机扫描 gold_data_*.json 降采样) */
+  goldHistory: (days: 1 | 7 | 30) => get<GoldHistoryResp>(`/api/gold/history?days=${days}`),
 };
+
+/* ---------------- 黄金观察(25, /gold 页面) ---------------- */
+
+export interface GoldPrice {
+  /** USD/oz */
+  usd: number | null;
+  /** CNY/oz(gold-api 直接给, 无需汇率反推) */
+  cny: number | null;
+  /** CNY/g = CNY/oz ÷ 31.1035 */
+  cnyPerG: number | null;
+  ts: string | null;
+  /** 换算降级说明(如 "CNY 报价缺失…") */
+  note: string;
+  /** 日内涨跌幅%(gold-monitor 轻量采样) */
+  changePct: number | null;
+  intradayNote: string;
+}
+
+export interface GoldTreasury {
+  date: string | null;
+  fetchedAt: string | null;
+  /** 期限 -> 收益率%: 1M..30Y */
+  yields: Record<string, number>;
+}
+
+export interface GoldRealCurve {
+  date: string | null;
+  nominal_rates: Record<string, number> | null;
+  breakeven_rates: Record<string, number> | null;
+  /** 已过滤 |x|<50 脏值(坑#15) */
+  real_rates: Record<string, number>;
+}
+
+export interface GoldInflation {
+  headlines: { CPI: { value: number; date: string; yoy_pct: number }; [k: string]: { value: number; date: string; yoy_pct: number } } | null;
+  breakeven_inflation: Record<string, number> | null;
+}
+
+export interface GoldFed {
+  date: string | null;
+  effectiveRate: number | null;
+  fetchedAt: string | null;
+}
+
+export interface GoldNews {
+  title: string;
+  url: string;
+  source: string;
+}
+
+export interface GoldCbTx {
+  country: string;
+  /** 交易归属月 YYYY-MM */
+  ym: string;
+  tonnes: number;
+  notes: string;
+}
+
+export interface GoldCbTop {
+  country: string;
+  date: string;
+  tonnes: number;
+}
+
+export interface GoldResp {
+  fetched_at: string | null;
+  gold: GoldPrice | null;
+  treasury: GoldTreasury | null;
+  real_curve: GoldRealCurve | null;
+  inflation: GoldInflation | null;
+  fed: GoldFed | null;
+  news: GoldNews[];
+  central_bank: { transactions: GoldCbTx[]; top10: GoldCbTop[] };
+  source: string;
+}
+
+export interface GoldHistoryResp {
+  days: number;
+  points: { t: string; p: number }[];
+  count: number;
+  source: string;
+}
 
 /** OpenRouter 用量轮询(1 小时) */
 export function useOpenRouterUsage() {

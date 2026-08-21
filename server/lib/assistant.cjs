@@ -20,8 +20,10 @@ const QUESTION_MIN = 2;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // 来源白名单（0818-aa: demo 报告页 CTA 提问带 source=demo_report 落盘区分漏斗来源；
+// 0820-fb-2b/26: blog 悬浮反馈改独立表单 source=blog_feedback（复用同一白名单）;
+// 0820-fb-3: 首页/opc 悬浮反馈 source=home_feedback / opc_feedback（同一白名单扩展）;
 // 未知来源字段一律忽略，防 jsonl 被注入任意字符串）
-const SOURCE_ALLOW = new Set(["demo_report"]);
+const SOURCE_ALLOW = new Set(["demo_report", "blog_feedback", "home_feedback", "opc_feedback"]);
 
 // 意向关键词（与 linjing_monitor.py INTENT_KEYWORDS 同源，four-platform-monitor 判定口径）
 // 0819-z: 补充「试用/trial」（决议第 7 项点名命中词），两处词表保持同步
@@ -78,15 +80,36 @@ function summarizeNeed(question) {
 }
 
 /**
- * 公司知识库 + 话术红线系统提示词（单一事实源，改动只在此处）
+ * 从 OPC_STATUS_FILE（dist/company/opc/status.json，opc_collect.py 实时双写）读当前 AI 成员数。
+ * 读不到 / 解析失败 / members 为空 → fallback 9（当前真实人数，保证零回归：成员变化后
+ * 忘改代码也不会答错，文件缺失时至少维持 9 的现状口径）。
+ * @param {string|null} statusFile status.json 绝对路径；不传/传 null 直接 fallback 9
+ * @returns {number}
  */
-function assistantSystemPrompt() {
-  return `你是 Gavin's Lab（一家真实运转的一人公司：1 位创始人 + 8 个独立 AI profile 通过 kanban 协作，把公司本身做成产品）官网的 AI 助理，代表公司团队回答访客问题。
+function readMemberCount(statusFile) {
+  if (!statusFile) return 9;
+  try {
+    const d = JSON.parse(fs.readFileSync(statusFile, "utf-8"));
+    const n = Array.isArray(d && d.members) ? d.members.length : 0;
+    return n >= 1 ? n : 9;
+  } catch {
+    return 9;
+  }
+}
+
+/**
+ * 公司知识库 + 话术红线系统提示词（单一事实源，改动只在此处）
+ * 成员数动态化（0820 苏木/Iris 加入后 8→9 漏改实锤）：从 statusFile 读 members.length
+ * 模板占位，文件缺失/损坏降级 fallback 9。@param {string|null} statusFile OPC_STATUS_FILE 透传
+ */
+function assistantSystemPrompt(statusFile) {
+  const n = readMemberCount(statusFile);
+  return `你是 Gavin's Lab（一家真实运转的一人公司：1 位创始人 + ${n} 个独立 AI profile 通过 kanban 协作，把公司本身做成产品）官网的 AI 助理，代表公司团队回答访客问题。
 
 关于公司产品，可以介绍的事实：
 - 核心产品 mrd / marketingdashboard：市场研究驾驶舱（行情面板），开源（MIT），零 API key，GitHub 免费公开。
 - 公司产品还有 mylauncher（安卓桌面启动器）、gold-monitor（黄金监控）、脚本宝脚本等。
-- 公司官网 https://www.hermes.cc.cd 有透明办公室页面，实时展示 8 个 AI 成员如何协作运转一家公司。
+- 公司官网 https://www.hermes.cc.cd 有透明办公室页面，实时展示 ${n} 个 AI 成员如何协作运转一家公司。
 
 话术红线（绝对遵守，违反即违规）：
 1. 托管版/付费版/SaaS 版还在筹备中，一律回答「筹备中，具体上线时间和安排以官网公布为准」，绝不给出任何价格、任何上线日期、任何承诺（不接受预定、不承诺功能、不承诺时间表）。
@@ -100,9 +123,10 @@ function assistantSystemPrompt() {
 /**
  * 调用 OpenRouter LLM 生成回复（带超时；失败返回 null 由调用方降级）
  * @param {string} question
+ * @param {string|null} statusFile OPC_STATUS_FILE 透传（成员数动态化）
  * @returns {Promise<string|null>}
  */
-async function callAssistantLLM(question) {
+async function callAssistantLLM(question, statusFile) {
   const key = process.env.OPENROUTER_API_KEY || "";
   if (!key) return null;
   const ctrl = new AbortController();
@@ -117,7 +141,7 @@ async function callAssistantLLM(question) {
       body: JSON.stringify({
         model: OR_MODEL,
         messages: [
-          { role: "system", content: assistantSystemPrompt() },
+          { role: "system", content: assistantSystemPrompt(statusFile) },
           { role: "user", content: question },
         ],
         max_tokens: 200,
@@ -159,6 +183,6 @@ function appendAssistantLead(dataDir, rec) {
 }
 
 module.exports = {
-  validateAssistant, detectIntent, summarizeNeed, assistantSystemPrompt, callAssistantLLM,
+  validateAssistant, detectIntent, summarizeNeed, readMemberCount, assistantSystemPrompt, callAssistantLLM,
   fallbackReply, appendAssistantLead, INTENT_KEYWORDS, QUESTION_MAX, NEED_DETAIL_MAX,
 };
