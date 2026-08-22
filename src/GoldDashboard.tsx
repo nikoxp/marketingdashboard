@@ -448,17 +448,17 @@ function GoldRealRatePanel({ className = "", ...zoomProps }: { className?: strin
 function GoldCbTxPanel({ className = "", ...zoomProps }: { className?: string } & PanelZoomProps) {
   const { data, error } = usePolling(() => api.gold(), POLL.MINUTE);
   const txs = data?.central_bank?.transactions ?? [];
-  const { ref: boxRef, size } = useElementSize();
 
   const bars = useMemo(() => {
     if (!txs.length) return [];
     const max = Math.max(...txs.map((t) => Math.abs(t.tonnes)), 1);
-    const { w: W } = size;
+    // 百分比宽度(基于 flex-1 条形容器), 不再用 W-90 像素估算 —— 像素估算在窄容器下
+    // bar+数字标签必然挤出容器(实测溢出 28px), 百分比让 bar 永远 ≤ 可用空间
     return txs.map((t) => ({
       ...t,
-      w: Math.max((Math.abs(t.tonnes) / max) * (W - 90), 4),
+      pct: (Math.abs(t.tonnes) / max) * 100,
     }));
-  }, [txs, size]);
+  }, [txs]);
 
   return (
     <Panel className={className} {...zoomProps} title="央行购金动态" icon={<Landmark size={14} />} accent={GOLD}
@@ -467,7 +467,7 @@ function GoldCbTxPanel({ className = "", ...zoomProps }: { className?: string } 
         {!txs.length ? (
           <GoldEmpty what={error ? "央行购金" : "央行购金"} />
         ) : (
-          <div ref={boxRef} className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto pr-1">
+          <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto pr-1">
             {bars.map((t) => {
               const pos = t.tonnes >= 0;
               return (
@@ -476,16 +476,19 @@ function GoldCbTxPanel({ className = "", ...zoomProps }: { className?: string } 
                     <div className="truncate text-[11px] text-slate-200">{t.country}</div>
                     <div className="text-[9px] text-slate-600" style={TNUM}>{t.ym}</div>
                   </div>
+                  {/* bar 占剩余空间(min-w-0 可压缩), 数字列 shrink-0 恒可见 —— 任何宽度不溢出 */}
                   <div className="flex min-w-0 flex-1 items-center">
-                    {/* 柱(增持正/减持负, 涨红跌绿: 增持=红/减持=绿) */}
-                    <div
-                      className="h-[14px] shrink-0 rounded-sm"
-                      style={{
-                        width: t.w,
-                        background: pos ? "linear-gradient(90deg,#f43f5e66,#f43f5e)" : "linear-gradient(90deg,#34d39966,#34d399)",
-                        opacity: 0.85,
-                      }}
-                    />
+                    <div className="min-w-0 flex-1">
+                      {/* 柱(增持正/减持负, 涨红跌绿: 增持=红/减持=绿) */}
+                      <div
+                        className="h-[14px] rounded-sm"
+                        style={{
+                          width: `${Math.max(t.pct, 1)}%`,
+                          background: pos ? "linear-gradient(90deg,#f43f5e66,#f43f5e)" : "linear-gradient(90deg,#34d39966,#34d399)",
+                          opacity: 0.85,
+                        }}
+                      />
+                    </div>
                     <span className={`ml-1.5 shrink-0 text-[11px] font-semibold ${pos ? "text-rose-300" : "text-emerald-300"}`} style={TNUM}>
                       {pos ? "+" : ""}{t.tonnes.toFixed(1)}t
                     </span>
@@ -616,35 +619,34 @@ function GoldNewsPanel({ className = "", ...zoomProps }: { className?: string } 
   );
 }
 
-/* ================= 布局(2×2 一行两面板 × 4 行) ================= */
+/* ================= 布局(3 行: 2+3+3, 庄子拍板) =================
+ * 行1: hero + trend(保持原宽度比 0.34/0.66)
+ * 行2: cbtx + cbtop + news(购金 + 新闻聚合, 约 0.34/0.33/0.33)
+ * 行3: yield + real + inflation(利率宏观线, 约 0.34/0.33/0.33)
+ * defaultH 总和 1.0 铺满视口; mobileH 保持各面板原值 */
 
 const PANEL_ROWS: PanelRowDef[] = [
   {
-    defaultH: 0.26,
+    defaultH: 0.33,
     panels: [
       { id: "gold-hero", component: GoldHeroPanel, defaultW: 0.34, mobileH: "h-[220px]" },
       { id: "gold-trend", component: GoldTrendPanel, defaultW: 0.66, mobileH: "h-[340px]" },
     ],
   },
   {
-    defaultH: 0.26,
+    defaultH: 0.33,
     panels: [
-      { id: "gold-yield", component: GoldYieldCurvePanel, defaultW: 0.5, mobileH: "h-[300px]" },
-      { id: "gold-real", component: GoldRealRatePanel, defaultW: 0.5, mobileH: "h-[300px]" },
+      { id: "gold-cbtx", component: GoldCbTxPanel, defaultW: 0.34, mobileH: "h-[300px]" },
+      { id: "gold-cbtop", component: GoldCbTopPanel, defaultW: 0.33, mobileH: "h-[300px]" },
+      { id: "gold-news", component: GoldNewsPanel, defaultW: 0.33, mobileH: "h-[320px]" },
     ],
   },
   {
-    defaultH: 0.24,
+    defaultH: 0.34,
     panels: [
-      { id: "gold-cbtx", component: GoldCbTxPanel, defaultW: 0.5, mobileH: "h-[300px]" },
-      { id: "gold-cbtop", component: GoldCbTopPanel, defaultW: 0.5, mobileH: "h-[300px]" },
-    ],
-  },
-  {
-    defaultH: 0.24,
-    panels: [
-      { id: "gold-inflation", component: GoldInflationPanel, defaultW: 0.4, mobileH: "h-[260px]" },
-      { id: "gold-news", component: GoldNewsPanel, defaultW: 0.6, mobileH: "h-[320px]" },
+      { id: "gold-yield", component: GoldYieldCurvePanel, defaultW: 0.34, mobileH: "h-[300px]" },
+      { id: "gold-real", component: GoldRealRatePanel, defaultW: 0.33, mobileH: "h-[300px]" },
+      { id: "gold-inflation", component: GoldInflationPanel, defaultW: 0.33, mobileH: "h-[260px]" },
     ],
   },
 ];

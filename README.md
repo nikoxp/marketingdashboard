@@ -75,6 +75,24 @@ flowchart LR
 - Spot prices are collected by the server every 4 hours into local history files — history grows day by day without the frontend being online
 - Single-process production: one port serves both the API and the built frontend
 
+## 🧱 Product boundary (red lines)
+
+This repository is **only** for the mrd product (the market-data cockpit). Code / data / credentials / tests for the OPC transparency office, company site, marketing, or customer support must **never** land here — they live in their own repos:
+
+| Product / service | Repo | Public domain |
+|---|---|---|
+| mrd (this repo) | theBigGavin/marketingdashboard | mrd.hermes.cc.cd |
+| OPC backend (opc-api) | theBigGavin/opc-os · `opc-api/` (private) | opc.hermes.cc.cd |
+| Company-site backend | theBigGavin/company-site-backend | api.hermes.cc.cd |
+| Company-site frontend | theBigGavin/gavin-lab-company | www.hermes.cc.cd |
+| knock leaderboard | theBigGavin/mylauncher · `server/` | hermes.cc.cd/api/v1/knock |
+
+Rules:
+
+- New APIs mount on their own product domain; cross-product calls go through the owning product's backend — never add another product's routes or reverse proxies here.
+- Sensitive credentials exist only in the owning repo's gitignored `server/.env`. This repo keeps only mrd's own keys: `IWENCAI_BASE_URL` / `IWENCAI_API_KEY` / `OPENROUTER_API_KEY` / `ARTIFICIAL_ANALYSIS_API_KEY`.
+- Guard: run `scripts/check_product_boundary.sh` (manual or CI) before merging — FAIL means non-mrd code slipped in. It treats `/api/rank`, `qq-rank`, `/api/leads`, `/api/v1/knock` and `/company/opc/status.json` as mrd-owned and never flags them.
+
 ## 🚀 Quick start
 
 ### Prerequisites
