@@ -2,6 +2,26 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 产品边界（红线，2026-08-22 架构拆分后长期有效）
+
+本仓库 = **mrd（Market Research Cockpit）产品代码**：只准行情数据服务 + 前端 + `/api/leads` + `server/hosting/`（托管版）。
+
+**禁止**：把 OPC 透明办公室、公司官网、营销、客服的代码/数据/凭据/测试放进本仓。这些代码一律放各自仓库：
+
+| 产品/服务 | 仓库 | 域名 |
+|---|---|---|
+| mrd（本仓） | theBigGavin/marketingdashboard | mrd.hermes.cc.cd |
+| OPC 后台（opc-api） | theBigGavin/opc-os 的 `opc-api/`（私有） | opc.hermes.cc.cd |
+| 官网后台 | theBigGavin/company-site-backend | api.hermes.cc.cd |
+| company-site 前端 | theBigGavin/gavin-lab-company | www.hermes.cc.cd |
+| knock 排行榜 | theBigGavin/mylauncher 的 `server/` | hermes.cc.cd/api/v1/knock |
+
+**规则**：
+1. 新增 API 默认挂对的产品域名（mrd→mrd.hermes.cc.cd、OPC→opc.hermes.cc.cd、官网→api.hermes.cc.cd）；跨域调用一律走对的产品后端，不在本仓加对方路由/反代。
+2. 敏感凭据只存在于所属产品仓库的 .env（gitignore）。本仓 `server/.env` 只放 mrd 自己的 key（`IWENCAI_BASE_URL` / `IWENCAI_API_KEY` / `OPENROUTER_API_KEY` / `ARTIFICIAL_ANALYSIS_API_KEY`）。`BLOG_ADMIN_KEY` 归 company-site-backend，`WORKBENCH_TOKEN` 归 opc-os，不得出现在本仓。
+3. 本仓保留的 mrd 本体（**勿误删/勿误报**）：`/api/rank` + `server/lib/qq-rank.cjs`（行情数据源）、`/api/leads` + `server/data/leads.json`（Pro 预注册）、`server/hosting/`（托管版，HOSTING=1 才加载）、`/company/opc/status.json` 静态服务（官网成员数数据源，红线保留）、`/api/v1/knock/*` 302 过渡重定向（旧客户端升级后删除）。
+4. 防线：`scripts/check_product_boundary.sh` 扫描 index.cjs 路由关键字与 lib/sources/data 文件。提交前手动跑或接 CI，**FAIL 不得合入**。
+
 ## Commands
 
 ```bash
