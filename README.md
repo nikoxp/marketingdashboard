@@ -234,6 +234,124 @@ During development the frontend talks to the local proxy via `/api`:
 
 > Note: `/api/mystery-select` and `/api/openrouter-usage` consume server-side private API keys and only accept same-origin page requests (403 cross-origin); `/api/aa-models` needs `ARTIFICIAL_ANALYSIS_API_KEY` in `server/.env` but the endpoint itself stays public (24h cached). All APIs only reflect CORS Origin to same-origin pages and are rate-limited per client IP (2400 req/min public, 30 req/min private; 429 when exceeded; real client IP taken from `CF-Connecting-IP` behind Cloudflare Tunnel). POST bodies are capped at 256KB, and unmatched `/api/` routes return a 404 JSON.
 
+## 🤖 MCP Server (Phase 1.5)
+
+mrd ships a built-in **MCP server** so AI agents can call market data tools directly. No extra dependencies — it runs in the same Node.js process, reusing the shared `cached()` memory cache.
+
+**Protocol**: [JSON-RPC 2.0](https://www.jsonrpc.org/specification) over [Streamable HTTP](https://modelcontextprotocol.io/docs/concepts/transports#streamable-http) (SSE for server→client pushes, POST for requests).
+
+### Endpoints
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/mcp` | Server metadata: version, tool list, resource list |
+| `POST` | `/mcp` | JSON-RPC 2.0 request (initialize / tools/list / tools/call / ping …) |
+| `GET` | `/mcp/stream` | SSE stream for server-initiated notifications |
+
+### Authentication
+
+No API key required for the public MCP tools. Private endpoints (`/api/mystery-select`, `/api/openrouter-usage`) are **not** exposed via MCP and require their own key configuration.
+
+### Tool List (5 public tools)
+
+| Tool | Description |
+| --- | --- |
+| `get_quotes` | Real-time A-share / HK / US / FX quotes. Input: comma-separated codes, e.g. `sh000001,sz399001,hkHSI,usNVDA` |
+| `get_boards` | Sector heat rankings. `type`: 01 (A-share industry) / 02 (A-share concept) / 03 (HK industry) / 05 (US); `dir`: 0 descending / 1 ascending |
+| `get_futures` | Commodity & crypto futures. Default list: NY Gold, Spot Gold, Silver, CAD, Crude Oil, VIX, Domestic Gold, BTC |
+| `get_money_flow` | A-share main-force net inflow ranking (Eastmoney primary, Sina fallback) |
+| `get_news` | Sina 7×24 financial flash. `page` (default 1), `size` (default 40) |
+
+### Resources
+
+| URI | Description |
+| --- | --- |
+| `mrd://health` | Server health status |
+| `mrd://stats` | Cache size & runtime stats |
+
+### Quick Start
+
+```bash
+# Start the server
+npm start
+
+# 1. Discover — get server metadata
+curl http://localhost:3000/mcp
+
+# 2. Initialize (required first call)
+curl -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+
+# 3. List tools
+curl -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+
+# 4. Call a tool — get A-share index quotes
+curl -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc":"2.0","id":3,"method":"tools/call",
+    "params":{
+      "name":"get_quotes",
+      "arguments":{"codes":"sh000001,sz399001,hkHSI,usNVDA"}
+    }
+  }'
+
+# 5. Get sector rankings
+curl -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc":"2.0","id":4,"method":"tools/call",
+    "params":{
+      "name":"get_boards",
+      "arguments":{"type":"01","dir":"0","n":"10"}
+    }
+  }'
+
+# 6. Ping (keep-alive / health check)
+curl -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":5,"method":"ping","params":{}}'
+```
+
+### Using with Claude Desktop
+
+Add this to `~/.config/claude/desktop.yaml` (or the equivalent config file):
+
+```yaml
+mcpServers:
+  mrd:
+    command: npx
+    args:
+      - -y
+      - @modelcontextprotocol/server-http
+      - http://localhost:3000/mcp
+```
+
+Restart Claude Desktop. The 5 MRD tools will appear in the tools panel automatically.
+
+### Caching
+
+All tool responses are cached in the server's shared memory:
+
+| Data | Cache TTL |
+| --- | --- |
+| Quotes (`get_quotes`) | 5 s |
+| Sector rankings (`get_boards`) | 5 s |
+| Futures (`get_futures`) | 15 s |
+| Money flow (`get_money_flow`) | 8 s |
+| News (`get_news`) | 8 s |
+
+Concurrent requests for the same data share one upstream fetch (inflight deduplication). Upstream failures trigger exponential backoff — the cache serves stale data rather than surfacing errors.
+
+### DSH / DeepSeek Harness Compatibility
+
+The MCP protocol is agent-framework agnostic. mrd can be called by DeepSeek Harness plugins, LangChain tools, or any MCP client. The server auto-detects DSH-compatible clients via the `User-Agent` header and applies DSH-appropriate cache TTLs.
+
+---
+
 ## 🗂️ Project structure
 
 ```

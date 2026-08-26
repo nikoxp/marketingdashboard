@@ -94,6 +94,14 @@ const { handleSpotTable, handleChemSpot } = srcSunsirs;
 const srcAiModels = require("./sources/ai-models.cjs")({ fetchText, num, readHistory, writeHistory, bjToday, path, fs });
 const { handleAaModels, handleSpendIndex } = srcAiModels;
 
+// ---- MCP 层（Phase 1.5）: 同进程零依赖嵌入 ----
+const { createMcpHandler } = require("./mcp-server.cjs");
+const handleMcp = createMcpHandler({
+  handleQuotes, handleBoards, handleBoardStocks, handleFutures,
+  handleMoneyFlowEM, handleRank, handleNews, handleStockSearch,
+  cache, cached,
+});
+
 // 个股资金流上游 inflight 去重表(handleStockFlows 使用)
 const flowInflight = new Map();
 
@@ -293,6 +301,8 @@ const routes = {
   "/api/stock-search": async (q) =>
     cached(`ssearch:${q.get("q")}`, 5000, () => handleStockSearch(q.get("q") || "")), // 前端击键触发, 短缓存防新浪WAF
   "/api/chain-parse": async (_q, body) => handleChainParse(body || {}),
+  // MCP 层（Phase 1.5）: Streamable HTTP, JSON-RPC 2.0
+  "/mcp": async (_q, _body, req, res) => handleMcp(_q, _body, req, res),
 };
 
 // ---- 托管版托管层（HOSTING=1 启用）: 单实例多租户账号系统, 只增不改核心路由 ----
@@ -311,6 +321,17 @@ if (process.env.HOSTING === "1") {
     console.error("[hosting] 托管层加载失败(HOSTING=1, 拒绝启动防裸奔):", e?.stack || e?.message || e);
     process.exit(1);
   }
+}
+
+// ---- demo-funnel 数据源镜像(0825-retro-3): 架构拆分后 visits.json(官网→company-site-backend)与
+// demo/status.json(→~/.hermes/opc/demo)产出方外迁, demo_funnel.py 仍读本仓 server/data/ 路径 →
+// 启动即同步 + 每 5 分钟把真实产出方文件镜像到本仓(只读镜像, 不改业务数据, mtime 守卫 + 原子写)。
+// HOSTING=1(托管实例, 客户环境无本机 OPC 数据源)跳过, 避免无谓 IO 与双实例重复写。
+if (process.env.HOSTING !== "1") {
+  const demoFunnel = require("./sources/demo-funnel.cjs")({ fs, path });
+  demoFunnel.mirrorAll();
+  setInterval(() => demoFunnel.mirrorAll(), 5 * 60 * 1000).unref();
+  console.log("[demo-funnel] 数据源镜像已启动(5min 周期): visits.json + demo/status.json");
 }
 
 // ---- 手速排行榜迁移(0819-i): 已迁独立进程 server/knock-standalone.cjs(:3032, 公网入口
@@ -530,7 +551,9 @@ const server = http.createServer(async (req, res) => {
           }
           try { body = JSON.parse(r.buf.toString()); } catch { send(res, 400, { ok: false, error: "invalid json body" }, cors); return; }
         }
-        const data = await routes[u.pathname](u.searchParams, body, req);
+        const data = await routes[u.pathname](u.searchParams, body, req, res);
+        // MCP handler 已直接写响应（返回 sentinel），不再包装
+        if (data === "MRD_MCP_HANDLED") return;
         // __rawResponse 约定(排行榜 0818): 契约要求裸 JSON 响应体(如 /api/v1/knock 的
         // {"leaderboard":...}), handler 返回 {__rawResponse: <payload>} 时原样输出, 不套 ok/data 包装。
         if (data && data.__rawResponse !== undefined) {
