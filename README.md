@@ -91,7 +91,7 @@ Rules:
 
 - New APIs mount on their own product domain; cross-product calls go through the owning product's backend — never add another product's routes or reverse proxies here.
 - Sensitive credentials exist only in the owning repo's gitignored `server/.env`. This repo keeps only mrd's own keys: `IWENCAI_BASE_URL` / `IWENCAI_API_KEY` / `OPENROUTER_API_KEY` / `ARTIFICIAL_ANALYSIS_API_KEY`.
-- Guard: run `scripts/check_product_boundary.sh` (manual or CI) before merging — FAIL means non-mrd code slipped in. It treats `/api/rank`, `qq-rank`, `/api/leads`, `/api/v1/knock` and `/company/opc/status.json` as mrd-owned and never flags them.
+- Guard: run `scripts/check_product_boundary.sh` (manual or CI) before merging — FAIL means non-mrd code slipped in. It treats `/api/rank`, `qq-rank`, `/api/leads`, `/api/v1/knock` and `/company/opc/status.json` (legacy static service, P0-1 stopped updates, kept for the whitelist) as mrd-owned and never flags them.
 
 ## 🚀 Quick start
 

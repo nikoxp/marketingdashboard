@@ -578,7 +578,8 @@ const server = http.createServer(async (req, res) => {
     // Gavin 拍板: mrd 域 /company/ 不再 serve 公司站 HTML, 一律 301 到官网对应路径(保 SEO/书签跳转)。
     // 映射: /company/ → https://www.hermes.cc.cd/ 、 /company/opc/ → https://www.hermes.cc.cd/opc/ 、
     //       /company/blog/ → https://www.hermes.cc.cd/blog/ (去掉 /company 前缀, index.html 归一为目录)。
-    // 红线: /company/opc/status.json 绝对保留 —— 官网成员数 fetch 数据源, 继续走下方静态服务(CORS + CF 短缓存)。
+    // 历史遗留: /company/opc/status.json 静态服务保留 —— P0-1 已停更、无读者(前端全切 www 域), 勿写新数据;
+    //           删除需另行评估(check_product_boundary 白名单依赖)。继续走下方静态服务(CORS + CF 短缓存)。
     if (req.method === "GET" || req.method === "HEAD") {
       if (u.pathname === "/company" || u.pathname.startsWith("/company/")) {
         if (u.pathname !== "/company/opc/status.json") {

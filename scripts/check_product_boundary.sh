@@ -16,7 +16,7 @@
 #   - /api/rank、server/lib/qq-rank.cjs   → mrd 行情数据源（东财涨跌幅排行 / 腾讯板块榜）
 #   - /api/leads + server/data/leads.json → mrd Pro 预注册
 #   - /api/v1/knock/* 302 重定向          → knock 迁出过渡路径（P0-3a 保留，最终删除）
-#   - /company/opc/status.json            → dist 静态服务（官网成员数 fetch 数据源，红线保留）
+#   - /company/opc/status.json            → dist 静态服务（历史遗留：P0-1 已停更、无读者；勿写新数据，删除需另行评估）
 #   - server/hosting/、HOSTING=1          → mrd 托管版（mrd-pro 私有仓注入）
 #
 # 退出码：0 = PASS（边界干净）；1 = FAIL（发现混入）；2 = 用法/环境错误
