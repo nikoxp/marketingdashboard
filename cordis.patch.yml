@@ -1,0 +1,27 @@
+# mrd: market data MCP as a deepseek-harness bundle.
+#
+# Bridges the hosted mrd MCP endpoint (https://mrd.hermes.cc.cd/mcp,
+# Streamable HTTP) through the in-box @deepseek-ai/dsh-mcp-client bridge.
+# The server's tools are registered under the `mrd` namespace:
+#   mcp__mrd__get_quotes
+#   mcp__mrd__get_boards
+#   mcp__mrd__get_futures
+#   mcp__mrd__get_money_flow
+#   mcp__mrd__get_news
+#
+# Zero API key needed — mrd aggregates free public market-data endpoints
+# (Tencent, Sina, Eastmoney, CNBC, Binance) into unified schemas with 24h
+# shared caching and a three-tier fallback chain, so one upstream hiccup
+# never becomes the agent's hallucination.
+#
+# Override per deployment from a later layer by referencing this row's id
+# WITHOUT `insert` (an `insert` with the same id would crash the loader
+# with "duplicate loader entry id").
+- insert:
+    - id: mcp-mrd
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: mrd
+        transport: streamable-http
+        url: https://mrd.hermes.cc.cd/mcp
+        toolCallTimeoutMs: 180000

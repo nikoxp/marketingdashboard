@@ -350,6 +350,14 @@ Concurrent requests for the same data share one upstream fetch (inflight dedupli
 
 The MCP protocol is agent-framework agnostic. mrd can be called by DeepSeek Harness plugins, LangChain tools, or any MCP client. The server auto-detects DSH-compatible clients via the `User-Agent` header and applies DSH-appropriate cache TTLs.
 
+**Install inside DeepSeek Harness** (zero key, remote endpoint, no local server needed):
+
+```sh
+dsh plugin --profile web add github:theBigGavin/marketingdashboard
+```
+
+The `dsh.bundle` manifest bridges `https://mrd.hermes.cc.cd/mcp` through the in-box `@deepseek-ai/dsh-mcp-client`; the 5 tools appear as `mcp__mrd__*`. mrd is also listed on the DSH community directories (GitHub `dsh-plugin` topic, awesome-dsh-plugin curated registry).
+
 ---
 
 ## 🗂️ Project structure

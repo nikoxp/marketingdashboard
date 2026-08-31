@@ -323,15 +323,16 @@ if (process.env.HOSTING === "1") {
   }
 }
 
-// ---- demo-funnel 数据源镜像(0825-retro-3): 架构拆分后 visits.json(官网→company-site-backend)与
-// demo/status.json(→~/.hermes/opc/demo)产出方外迁, demo_funnel.py 仍读本仓 server/data/ 路径 →
-// 启动即同步 + 每 5 分钟把真实产出方文件镜像到本仓(只读镜像, 不改业务数据, mtime 守卫 + 原子写)。
+// ---- demo-funnel 数据源镜像(0825-retro-3 + 0830-gov-b): 架构拆分后 visits.json(官网→company-site-backend)、
+// demo/status.json(→~/.hermes/opc/demo)、assistant-leads.jsonl(/api/assistant→company-site-backend)产出方均外迁,
+// demo_funnel.py 仍读本仓 server/data/ 路径 → 启动即同步 + 每 5 分钟把真实产出方文件镜像到本仓
+// (只读镜像, 不改业务数据, mtime 守卫 + 原子写)。
 // HOSTING=1(托管实例, 客户环境无本机 OPC 数据源)跳过, 避免无谓 IO 与双实例重复写。
 if (process.env.HOSTING !== "1") {
   const demoFunnel = require("./sources/demo-funnel.cjs")({ fs, path });
   demoFunnel.mirrorAll();
   setInterval(() => demoFunnel.mirrorAll(), 5 * 60 * 1000).unref();
-  console.log("[demo-funnel] 数据源镜像已启动(5min 周期): visits.json + demo/status.json");
+  console.log("[demo-funnel] 数据源镜像已启动(5min 周期): visits.json + demo/status.json + assistant-leads.jsonl");
 }
 
 // ---- 手速排行榜迁移(0819-i): 已迁独立进程 server/knock-standalone.cjs(:3032, 公网入口

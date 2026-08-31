@@ -69,7 +69,7 @@ check treasury-history /api/treasury-history
 check moneyflow /api/moneyflow
 check board-flow /api/board-flow
 check aa-models /api/aa-models
-check token-stats /api/token-stats
+# token-stats 已随 p0-3b(45d3906) 迁至 opc-server(:3033, opc.hermes.cc.cd) 接管，mrd 不再提供（404 属预期）
 
 # 带参端点
 check quotes "/api/quotes?codes=sh000001,sz399001,hf_GC"

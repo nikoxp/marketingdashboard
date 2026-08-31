@@ -87,18 +87,23 @@ test("mirrorAll 遍历全部 SOURCES 且目标目录不残留 tmp 文件", () =>
   const { srcDir, dataDir, mod } = makeFixture();
   fs.writeFileSync(path.join(srcDir, "visits.json"), "V");
   fs.writeFileSync(path.join(srcDir, "status.json"), "S");
+  fs.writeFileSync(path.join(srcDir, "assistant-leads.jsonl"), "L");
   // 用环境变量覆盖源路径(模块加载时读取), 重新构造实例
   const oldV = process.env.DEMO_FUNNEL_VISITS_SRC;
   const oldS = process.env.DEMO_FUNNEL_STATUS_SRC;
+  const oldL = process.env.DEMO_FUNNEL_LEADS_SRC;
   process.env.DEMO_FUNNEL_VISITS_SRC = path.join(srcDir, "visits.json");
   process.env.DEMO_FUNNEL_STATUS_SRC = path.join(srcDir, "status.json");
+  process.env.DEMO_FUNNEL_LEADS_SRC = path.join(srcDir, "assistant-leads.jsonl");
   try {
     const mod2 = createDemoFunnel({ fs, path }, { dataDir });
     const out = mod2.mirrorAll();
     assert.equal(out["visits.json"], true);
     assert.equal(out["demo/status.json"], true);
+    assert.equal(out["assistant-leads.jsonl"], true);
     assert.equal(fs.readFileSync(path.join(dataDir, "visits.json"), "utf-8"), "V");
     assert.equal(fs.readFileSync(path.join(dataDir, "demo", "status.json"), "utf-8"), "S");
+    assert.equal(fs.readFileSync(path.join(dataDir, "assistant-leads.jsonl"), "utf-8"), "L");
     const leftovers = [];
     (function walk(d) {
       for (const f of fs.readdirSync(d)) {
@@ -111,5 +116,22 @@ test("mirrorAll 遍历全部 SOURCES 且目标目录不残留 tmp 文件", () =>
   } finally {
     if (oldV === undefined) delete process.env.DEMO_FUNNEL_VISITS_SRC; else process.env.DEMO_FUNNEL_VISITS_SRC = oldV;
     if (oldS === undefined) delete process.env.DEMO_FUNNEL_STATUS_SRC; else process.env.DEMO_FUNNEL_STATUS_SRC = oldS;
+    if (oldL === undefined) delete process.env.DEMO_FUNNEL_LEADS_SRC; else process.env.DEMO_FUNNEL_LEADS_SRC = oldL;
   }
+});
+
+test("assistant-leads.jsonl 镜像: 源含 demo_report 记录 → 内容原样落盘(漏斗统计口径源)", () => {
+  const { srcDir, dataDir, mod } = makeFixture();
+  const src = path.join(srcDir, "assistant-leads.jsonl");
+  const line = JSON.stringify({ ts: "2026-08-30T10:00:00Z", question: "怎么用", source: "demo_report", contact: "a@b.com" });
+  fs.writeFileSync(src, line + "\n");
+  assert.equal(mod.mirrorOne("assistant-leads.jsonl", src), true);
+  const out = fs.readFileSync(path.join(dataDir, "assistant-leads.jsonl"), "utf-8");
+  assert.equal(out, line + "\n");
+  // 更新后源新 → 镜像跟随更新
+  const line2 = JSON.stringify({ ts: "2026-08-30T11:00:00Z", question: "多少钱", source: "demo_report" });
+  fs.writeFileSync(src, line2 + "\n");
+  fs.utimesSync(src, new Date(Date.now() + 60000), new Date(Date.now() + 60000));
+  assert.equal(mod.mirrorOne("assistant-leads.jsonl", src), true);
+  assert.equal(fs.readFileSync(path.join(dataDir, "assistant-leads.jsonl"), "utf-8"), line2 + "\n");
 });
