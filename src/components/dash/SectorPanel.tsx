@@ -6,6 +6,7 @@ import { usePolling } from "@/hooks/usePolling";
 import { api, type Board } from "@/lib/api";
 import { POLL } from "@/lib/intervals";
 import { clsChg, fmtPct, fmtYuan, hexChg } from "@/lib/format";
+import { boardScopeSummary, groupBoardsByScope, pctRankNote } from "@/lib/board-taxonomy";
 import { isTv } from "@/lib/tv";
 import { TabBar } from "./SharedUI";
 
@@ -54,6 +55,9 @@ function BoardRow({ b, maxAbs, active, onClick }: { b: Board; maxAbs: number; ac
   );
 }
 
+/** 市场板块实时热点 — 行业(腾讯申万) / 概念 两个 tab。
+ *  层级口径统一走 @/lib/board-taxonomy: 榜单先按口径/层级分组渲染, 只在同层内按涨跌幅排序比较,
+ *  并在面板顶部写明当前口径/层级与排序方式(避免一级/二级/细分板块被放进同一张榜竞争)。 */
 export function SectorPanel({ className = "", ...zoomProps }: { className?: string } & PanelZoomProps) {
   const [kind, setKind] = useState<Kind>("01");
   const [dir, setDir] = useState<0 | 1>(0);
@@ -65,8 +69,18 @@ export function SectorPanel({ className = "", ...zoomProps }: { className?: stri
   const { data: boards, error } = usePolling(() => api.boards(kind, dir, kind === "01" ? 300 : 1000), POLL.SECTOR, [kind, dir]);
 
   const filtered = useMemo(() => boards?.filter((b) => !q || b.name.includes(q)), [boards, q]);
-  const visibleBoards = useMemo(() => filtered?.slice(0, MAX_BOARD_ROWS), [filtered]);
-  const maxAbs = filtered ? Math.max(...filtered.map((b) => Math.abs(b.pct)), 0.01) : 1;
+  // 分层: 先按口径/层级分组, 组内才允许按涨跌幅比较(单层级榜单只有 1 组 → 渲染与原先一致);
+  // 比较条基准 maxAbs 也按组算, 避免跨层级用同一根标尺
+  const { groups, scopeLine } = useMemo(() => {
+    if (!filtered) return { groups: null, scopeLine: "" };
+    return {
+      groups: groupBoardsByScope(filtered).map((g) => ({
+        ...g,
+        maxAbs: Math.max(...g.items.map((b) => Math.abs(b.pct)), 0.01),
+      })),
+      scopeLine: boardScopeSummary(filtered),
+    };
+  }, [filtered]);
 
   // 榜单/搜索变化时轮播索引归零(render-time 派生态调整)
   const filterKey = `${kind}|${dir}|${q}`;
@@ -148,18 +162,37 @@ export function SectorPanel({ className = "", ...zoomProps }: { className?: stri
       <div className="flex h-full min-h-0">
         {/* 板块列表 */}
         <div className="min-w-0 flex-1 overflow-y-auto p-1.5">
+          {/* 口径行: 明确写出榜单口径/层级与排序方式(不跨层级混排, 也不偷改口径) */}
+          <div className="px-2 pb-1 text-[10px] leading-4 text-slate-500">
+            <span className="text-slate-400">口径 </span>
+            <span className="text-slate-300">{scopeLine || (kind === "01" ? "申万行业" : "概念板块")}</span>
+            <span className="mx-1 text-slate-700">·</span>
+            <span>{pctRankNote(dir)}</span>
+            <span className="mx-1 text-slate-700">·</span>
+            <span>仅同层内比较</span>
+          </div>
           <div className="grid grid-cols-[24px_1fr_76px_96px] gap-2 px-2 py-1 text-[10px] text-slate-500">
             <span>代码</span><span>板块 / 强度{filtered ? ` (${filtered.length})` : ""}</span><span className="text-right">涨跌幅</span><span className="text-right">领涨股</span>
           </div>
-          {visibleBoards?.map((b) => (
-            <BoardRow key={b.code} b={b} maxAbs={maxAbs} active={activeBoard?.code === b.code}
-              onClick={() => pick(b)} />
-          ))}
-          {filtered && filtered.length > MAX_BOARD_ROWS && (
-            <div className="p-2 text-center text-[10px] text-slate-600">
-              仅显示前 {MAX_BOARD_ROWS} / 共 {filtered.length} 个板块, 搜索可定位其余
+          {groups?.map((g) => (
+            <div key={g.key}>
+              {/* 多层级时才出现分组头; 单层级榜单不额外占位 */}
+              {groups.length > 1 && (
+                <div className="mx-1 mt-1 rounded bg-slate-800/60 px-2 py-0.5 text-[10px] text-cyan-300/90">
+                  {g.label} · {g.items.length} 个 · 同层内排序
+                </div>
+              )}
+              {g.items.slice(0, MAX_BOARD_ROWS).map((b) => (
+                <BoardRow key={b.code} b={b} maxAbs={g.maxAbs} active={activeBoard?.code === b.code}
+                  onClick={() => pick(b)} />
+              ))}
+              {g.items.length > MAX_BOARD_ROWS && (
+                <div className="p-2 text-center text-[10px] text-slate-600">
+                  {g.label}仅显示前 {MAX_BOARD_ROWS} / 共 {g.items.length} 个, 搜索可定位其余
+                </div>
+              )}
             </div>
-          )}
+          ))}
           {!filtered && (
             <div className="p-6 text-center text-[11px] text-slate-600">
               {error ? <span className="text-rose-400/80">数据源连接失败,自动重试中…<br />{error}</span> : "板块数据加载中…"}

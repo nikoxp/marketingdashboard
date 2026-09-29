@@ -335,6 +335,30 @@ async function get<T>(path: string): Promise<T> {
   return j.data as T;
 }
 
+/** 响应信封: 服务端在上游全挂时会降级返回上次成功数据并置 stale=true(带 asof 时间戳),
+ *  数组类端点的 data 无法携带字段, 新鲜度只在信封上 → 需要标记的调用方用 getEnvelope() */
+export interface ApiEnvelope<T> {
+  data: T;
+  stale: boolean;
+  asof: number | null;
+  source: string | null;
+  partial?: boolean;
+}
+
+async function getEnvelope<T>(path: string): Promise<ApiEnvelope<T>> {
+  const r = await fetch(`${API_BASE}${path}`, { signal: timeoutSignal(10000) });
+  const j = await r.json().catch(() => null);
+  if (!r.ok) throw new Error(j?.error || `HTTP ${r.status}`);
+  if (!j?.ok) throw new Error(j?.error || "api error");
+  return {
+    data: j.data as T,
+    stale: !!j.stale,
+    asof: j.asof ?? null,
+    source: j.source ?? null,
+    partial: !!j.partial,
+  };
+}
+
 async function post<T>(path: string, body: unknown): Promise<T> {
   const r = await fetch(`${API_BASE}${path}`, {
     method: "POST",
@@ -515,7 +539,7 @@ export const api = {
   futureDaily: (code: string) => get<FutureDaily>(`/api/future-daily?code=${encodeURIComponent(code)}`),
   futuresBatch: (codes: string[]) =>
     get<Record<string, FutureQuote>>(`/api/futures?list=${codes.map(encodeURIComponent).join(",")}`),
-  boardFlow: (n = 20) => get<BoardFlow[]>(`/api/board-flow?n=${n}`),
+  boardFlow: (n = 20) => getEnvelope<BoardFlow[]>(`/api/board-flow?n=${n}`),
   news: (size = 60) => withFallback(() => get<NewsItem[]>(`/api/news?size=${size}`), () => directNews(size)),
   treasuries: () => get<Treasury[]>(`/api/treasuries`),
   treasuryHistory: () => get<TreasuryCurvePoint[]>(`/api/treasury-history`),

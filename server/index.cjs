@@ -11,6 +11,7 @@ const { parseCsvParam, chunked, safeRecord } = require("./lib/netutil.cjs");
 const { bjToday, readHistory, writeHistory } = require("./lib/persist.cjs");
 const { createCache } = require("./lib/cache.cjs");
 const createFetchAny = require("./lib/fetch-any.cjs");
+const createLastGood = require("./lib/last-good.cjs");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // 分钟线缓存 TTL: 常规 5s(与报价中心同频); 汇率(wh*)降频 2min —
@@ -24,8 +25,12 @@ const stats = { reqs: 0, upstream: 0, blocked: 0, started: Date.now() };
 
 // 统一上游数据通道(fetch/curl 双通道 + 状态码校验)与统一内存缓存(命名 TTL + 失败退避 + 负缓存)
 const { fetchText, curlText, fetchTextAny, fetchWithFallback, UA } = createFetchAny({ onUpstream: () => stats.upstream++ });
-const { cache, set: cacheSet, sweep: sweepCache, backoffOf, cached, quoteBackoff, entry, failEntry, TTLS } = createCache();
+const { cache, set: cacheSet, sweep: sweepCache, backoffOf, cached, cachedMeta, quoteBackoff, entry, failEntry, TTLS } = createCache();
 const qqRank = require("./lib/qq-rank.cjs")({ fetchText, num });
+
+// 上次成功数据快照(内存+磁盘): 上游全挂时四类资金流接口降级返回旧值并带 stale/asof,
+// 而不是 502。落盘目录 server/data/last-good(server/data/ 已 gitignore, 不进版本库)
+const lastGood = createLastGood({ fs, path, dir: path.join(__dirname, "data", "last-good") });
 
 // 加载 .env(须先于数据源模块 require, 模块内读取 process.env 密钥)
 try {
@@ -62,6 +67,16 @@ const srcEastmoney = require("./sources/eastmoney.cjs")({
   entry, failEntry, quoteBackoff, TTLS, qqRank,
 });
 const { handleRank, handleMoneyFlow, handleStockBoards, handleMoneyFlowEM, handleBoardMoneyFlow, handleStockFlows, handleBoardFlow, fetchSinaJson } = srcEastmoney;
+
+// 资金流四接口的多源回退层(东财 push2* 出网被掐后的替代源链 + 旧数据降级):
+// /api/board-flow · /api/board-moneyflow · /api/stock-flow(s) · /api/stock-boards
+// 东财实现(上面 srcEastmoney)原样保留为链首主源, 上游恢复即自动回到东财口径。
+const srcMoneyFlow = require("./sources/moneyflow.cjs")({
+  fetchWithFallback, fetchSinaJson, num, toMarketCode6, qqRank,
+  cache, cacheSet, entry, TTLS, lastGood,
+  em: { handleBoardFlow, handleBoardMoneyFlow, handleStockFlows, handleStockBoards },
+});
+const { boardFlow, boardMoneyFlow, stockFlow, stockFlows, stockBoards } = srcMoneyFlow;
 
 const srcSina = require("./sources/sina.cjs")({
   fetchTextAny, fetchSinaJson, num, toMarketCode6,
@@ -129,6 +144,23 @@ function send(res, code, obj, extra = {}) {
   for (const k of Object.keys(headers)) if (headers[k] == null) delete headers[k];
   res.writeHead(code, headers);
   res.end(body);
+}
+
+// 数据新鲜度契约(四类资金流接口): 数据源 handler 返回 { data, stale, asof, source, partial? } 时,
+// 路由用 freshness(payload, env) 包成 sentinel; 响应层把 stale/asof/source 平铺到信封(数组端点无法带字段)
+// 或合并进 data(对象端点) —— 既有字段一个不动, 只做增量。env 为 cachedMeta() 的 { ts, stale }(缓存层降级)
+function freshness(p, env) {
+  const meta = {
+    stale: !!(p && p.stale) || !!(env && env.stale),
+    asof: (p && p.asof) ?? (env && env.ts) ?? null,
+    source: (p && p.source) ?? null,
+  };
+  if (p && p.partial) meta.partial = true;
+  let data = p && typeof p === "object" && "data" in p ? p.data : p;
+  if (data && !Array.isArray(data) && typeof data === "object") {
+    data = { ...data, stale: meta.stale, asof: meta.asof, source: meta.source };
+  }
+  return { __fresh: { data, meta } };
 }
 
 /* ---------------- TTL 缓存 + 并发合并(防上游限流) — cached() 在 lib/cache.cjs 统一实现 ---------------- */
@@ -234,17 +266,23 @@ const routes = {
         return handleMoneyFlow(q.get("n") || "20");
       }).catch(() => handleMoneyFlow(q.get("n") || "20"))
     ),
-  // 板块成分股主力净流入排行(东财 clist, fs=b:板块代码, f62 降序) — 板块资金流向→主力排行联动
-  "/api/board-moneyflow": async (q) =>
-    cached(`bmf:${q.get("code")}:${q.get("n")}`, 8000, () =>
-      handleBoardMoneyFlow(q.get("code") || "", q.get("n") || "15")
-    ),
-  "/api/stock-flow": async (q) =>
-    handleStockFlows(q.get("code") || "", flowInflight).then((rows) => rows[0] || Promise.reject(new Error("empty stock-flow"))),
-  "/api/stock-flows": async (q) => handleStockFlows(q.get("codes") || "", flowInflight),
-  "/api/board-flow": async (q) => cached(`bf:${q.get("n")}`, 120000, () => handleBoardFlow(q.get("n") || "20")),
-  "/api/stock-boards": async (q) =>
-    cached(`sb:${q.get("code")}`, 24 * 3600 * 1000, () => handleStockBoards(q.get("code") || "")),
+  // 板块成分股主力净流入排行: 东财 clist(fs=b:板块代码) → 新浪 bankuai= 完整榜 → 成分清单×全市场净额映射
+  "/api/board-moneyflow": async (q) => {
+    const env = await cachedMeta(`bmf:${q.get("code")}:${q.get("n")}`, 8000, () => boardMoneyFlow(q.get("code") || "", q.get("n") || "15"));
+    return freshness(env.data, env);
+  },
+  // 个股资金流: 东财 ulist → 新浪全市场榜/个股日频; 取不到且无历史快照才报错
+  "/api/stock-flow": async (q) => freshness(await stockFlow(q.get("code") || "", flowInflight)),
+  "/api/stock-flows": async (q) => freshness(await stockFlows(q.get("codes") || "", flowInflight)),
+  "/api/board-flow": async (q) => {
+    const env = await cachedMeta(`bf:${q.get("n")}`, 120000, () => boardFlow(q.get("n") || "20"));
+    return freshness(env.data, env);
+  },
+  // 个股所属板块: 东财 push2 f127/f128/f129 → 东财 datacenter-web F10 核心题材(行业/地域/概念)
+  "/api/stock-boards": async (q) => {
+    const env = await cachedMeta(`sb:${q.get("code")}`, 24 * 3600 * 1000, () => stockBoards(q.get("code") || ""));
+    return freshness(env.data, env);
+  },
   "/api/news": async (q) =>
     cached(`news:${q.get("page")}:${q.get("size")}`, 8000, () =>
       handleNews(q.get("page") || "1", q.get("size") || "40")
@@ -555,9 +593,13 @@ const server = http.createServer(async (req, res) => {
         const data = await routes[u.pathname](u.searchParams, body, req, res);
         // MCP handler 已直接写响应（返回 sentinel），不再包装
         if (data === "MRD_MCP_HANDLED") return;
-        // __rawResponse 约定(排行榜 0818): 契约要求裸 JSON 响应体(如 /api/v1/knock 的
-        // {"leaderboard":...}), handler 返回 {__rawResponse: <payload>} 时原样输出, 不套 ok/data 包装。
-        if (data && data.__rawResponse !== undefined) {
+        // __fresh 约定(四类资金流接口): 路由用 freshness() 包出 { data, meta }, 信封多带
+        // stale/asof/source(/partial) 增量字段; data 本身形态与改造前一致
+        if (data && data.__fresh) {
+          send(res, 200, { ok: true, data: data.__fresh.data, ts: Date.now(), ...data.__fresh.meta }, cors);
+        } else if (data && data.__rawResponse !== undefined) {
+          // __rawResponse 约定(排行榜 0818): 契约要求裸 JSON 响应体(如 /api/v1/knock 的
+          // {"leaderboard":...}), handler 返回 {__rawResponse: <payload>} 时原样输出, 不套 ok/data 包装。
           send(res, 200, data.__rawResponse, cors);
         } else {
           send(res, 200, { ok: true, data, ts: Date.now() }, cors);
